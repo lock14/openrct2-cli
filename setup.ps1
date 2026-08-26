@@ -30,19 +30,22 @@ function Install-ConfigWithBackup {
 
     if (Test-Path -Path $Destination) {
         $ExistingContent = Get-Content -Path $Destination -Raw
-        if ($ExistingContent -ne $Content) {
+        $NormalizedExisting = ($ExistingContent -replace "`r`n", "`n").TrimEnd()
+        $NormalizedNew = ($Content -replace "`r`n", "`n").TrimEnd()
+
+        if ($NormalizedExisting -ne $NormalizedNew) {
             $Timestamp = Get-Date -Format "yyyyMMddHHmmss"
             $BackupPath = "$Destination.bak.$Timestamp"
             Write-Host "Backing up existing $(Split-Path -Leaf $Destination) to $BackupPath"
             Copy-Item -Path $Destination -Destination $BackupPath -Force
             Write-Host "Installing $(Split-Path -Leaf $Destination)..."
-            Set-Content -Path $Destination -Value $Content -Encoding UTF8
+            Set-Content -Path $Destination -Value $Content -Encoding UTF8 -NoNewline
         } else {
             Write-Host "$(Split-Path -Leaf $Destination) is already up to date."
         }
     } else {
         Write-Host "Installing $(Split-Path -Leaf $Destination)..."
-        Set-Content -Path $Destination -Value $Content -Encoding UTF8
+        Set-Content -Path $Destination -Value $Content -Encoding UTF8 -NoNewline
     }
 }
 
