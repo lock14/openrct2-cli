@@ -1,0 +1,18 @@
+# OpenRCT2 Cache and Index files
+*.idx
+
+# Timestamped Backups
+*.bak.*
+
+# Temporary / OS files
+*.tmp
+*.log
+.DS_Store
+Thumbs.db
+
+# User data directories (not tracked in config repo)
+save/
+crash/
+desyncs/
+replay/
+screenshot/
