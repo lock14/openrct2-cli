@@ -29,14 +29,21 @@ function Install-ConfigWithBackup {
     }
 
     if (Test-Path -Path $Destination) {
-        $Timestamp = Get-Date -Format "yyyyMMddHHmmss"
-        $BackupPath = "$Destination.bak.$Timestamp"
-        Write-Host "Backing up existing $(Split-Path -Leaf $Destination) to $BackupPath"
-        Copy-Item -Path $Destination -Destination $BackupPath -Force
+        $ExistingContent = Get-Content -Path $Destination -Raw
+        if ($ExistingContent -ne $Content) {
+            $Timestamp = Get-Date -Format "yyyyMMddHHmmss"
+            $BackupPath = "$Destination.bak.$Timestamp"
+            Write-Host "Backing up existing $(Split-Path -Leaf $Destination) to $BackupPath"
+            Copy-Item -Path $Destination -Destination $BackupPath -Force
+            Write-Host "Installing $(Split-Path -Leaf $Destination)..."
+            Set-Content -Path $Destination -Value $Content -Encoding UTF8
+        } else {
+            Write-Host "$(Split-Path -Leaf $Destination) is already up to date."
+        }
+    } else {
+        Write-Host "Installing $(Split-Path -Leaf $Destination)..."
+        Set-Content -Path $Destination -Value $Content -Encoding UTF8
     }
-
-    Write-Host "Installing $(Split-Path -Leaf $Destination)..."
-    Set-Content -Path $Destination -Value $Content -Encoding UTF8
 }
 
 Write-Host "Setting up OpenRCT2 configurations for Windows..."

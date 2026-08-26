@@ -8,8 +8,11 @@ A curated set of configuration files, modernized keybinding presets, desktop int
 
 - **Modernized Camera & Controls**: Full **WASD** viewport panning, **Q/E** rotation, and **PageUp/PageDown** zooming.
 - **Enhanced Visual Profile**: Uncapped FPS with VSync enabled, hardware-accelerated software drawing (`SOFTWARE_HWD`), 1.5x UI scaling for high-DPI displays, and landscape smoothing.
-- **Desktop & Launcher Integration**: Automatic deployment of `.desktop` application menu entry, high-resolution app icon, and CLI symlink to `/opt/OpenRCT2/OpenRCT2.AppImage`.
-- **Safety & Quality of Life**: Autosaves enabled, cheat menu hotkey (`CTRL+ALT+C`), quick transparency toggles, and staff auto-hiring shortcuts.
+- **FreeDesktop XDG Integration**:
+  - Compliant `.desktop` launcher with discrete GPU preference (`PrefersNonDefaultGPU=true`) and full MIME / URI scheme registration (`openrct2://`).
+  - Standard `hicolor` 256x256 app icon theme installation and desktop database cache refreshes.
+  - Seamless CLI symlink to `/opt/OpenRCT2/OpenRCT2.AppImage`.
+- **Idempotent Non-Destructive Deployments**: Backups are created automatically before overwrites, with change detection preventing duplicate backups on repeated installs.
 
 ---
 
@@ -41,13 +44,13 @@ The `Makefile` automatically detects your operating system and selects the prope
 - **Linux Destinations**:
   - Configs: `~/.config/OpenRCT2/`
   - Desktop Entry: `~/.local/share/applications/OpenRCT2.desktop`
-  - Icon: `~/.local/share/icons/OpenRCT2.png`
+  - Icons: `~/.local/share/icons/hicolor/256x256/apps/openrct2.png` & `~/.local/share/icons/openrct2.png`
   - CLI Symlink: `~/.local/bin/openrct2`
 - **macOS Destinations**:
   - Configs: `~/Library/Application Support/OpenRCT2/`
 
 #### Deploy All (Configs + Desktop Integration)
-To deploy configurations, desktop entries, and icon assets with automatic `.bak.<timestamp>` backups:
+To deploy configurations, desktop entries, and icon assets with automatic change-detected `.bak.<timestamp>` backups:
 
 ```bash
 make install
@@ -58,12 +61,13 @@ Or install individual components:
 - `make install-config` — Deploys only `config.ini`
 - `make install-shortcuts` — Deploys only `shortcuts.json`
 - `make install-desktop` — Deploys `OpenRCT2.desktop` (Linux only)
-- `make install-icon` — Deploys `OpenRCT2.png` (Linux only)
+- `make install-icon` — Deploys icons to XDG and hicolor directories (Linux only)
 - `make install-symlink` — Creates `~/.local/bin/openrct2` symlink to AppImage (Linux only)
 
 #### Managing In-Game & Desktop Changes
 - `make diff` — Compare repository configs and desktop entries against active system files.
 - `make sync` — Pull changes made in-game or desktop entries back into the repository (automatically sanitizing personal paths/usernames).
+- `make uninstall` — Cleanly remove deployed configs, desktop entries, icons, and symlinks.
 
 #### Standalone Shell Script
 Alternatively, deploy without `make` using the POSIX setup script:
@@ -81,7 +85,7 @@ To install the OpenRCT2 configurations on Windows via PowerShell:
 .\setup.ps1
 ```
 
-This deploys `config.ini` and `shortcuts.json` to `%USERPROFILE%\Documents\OpenRCT2\`, creating timestamped backups beforehand.
+This deploys `config.ini` and `shortcuts.json` to `%USERPROFILE%\Documents\OpenRCT2\`, creating change-detected backups beforehand.
 
 If your OpenRCT2 user folder is in a custom path, supply the `-CustomTargetDir` parameter:
 ```powershell
@@ -99,11 +103,12 @@ If your OpenRCT2 user folder is in a custom path, supply the `-CustomTargetDir` 
 | `make install-config` | Installs only `config/config.ini` |
 | `make install-shortcuts` | Installs only `config/shortcuts.json` |
 | `make install-desktop` | Installs `desktop/OpenRCT2.desktop` to `~/.local/share/applications/` |
-| `make install-icon` | Installs `desktop/OpenRCT2.png` to `~/.local/share/icons/` |
+| `make install-icon` | Installs icons to standard `~/.local/share/icons/` and `hicolor` paths |
 | `make install-symlink` | Creates `~/.local/bin/openrct2` symlink directly to `/opt/OpenRCT2/OpenRCT2.AppImage` |
+| `make uninstall` | Removes deployed configurations, desktop files, icons, and symlinks |
 | `make diff` | Shows diff between repo configs/desktop entries and live system files |
 | `make sync` | Syncs live system configs/desktop entries back into the git repository |
-| `make check` | Runs validation suite (syntax, JSON validation, invariants, test install) |
+| `make check` | Runs validation suite (syntax, JSON validation, invariants, idempotent install, uninstall) |
 
 ---
 

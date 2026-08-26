@@ -11,27 +11,32 @@ Any agent modifying this repository must follow these core principles.
 - **Never Commit Personal User Paths**: Never commit absolute personal paths like `/home/<username>/` or `C:\Users\<username>\` into configuration files, desktop entries, or scripts.
 - **Use `__HOME__` and `__USER__` Placeholders**:
   - In `config/config.ini`, user home paths use `__HOME__` and player names use `__USER__`.
-  - In `desktop/OpenRCT2.desktop`, icon paths use `__HOME__` (`Icon=__HOME__/.local/share/icons/OpenRCT2.png`).
-  - Deployment tooling (`Makefile`, `setup.sh`, `setup.ps1`) dynamically substitutes these at installation time.
+  - In `desktop/OpenRCT2.desktop`, use standard FreeDesktop theme icon naming (`Icon=openrct2`) without absolute paths.
+  - Deployment tooling (`Makefile`, `setup.sh`, `setup.ps1`) dynamically substitutes placeholders at installation time.
 - **Respect Standard Directory Structures**:
   - **OpenRCT2 User Directory (Linux)**: `~/.config/OpenRCT2/`
   - **OpenRCT2 Desktop Entry (Linux)**: `~/.local/share/applications/OpenRCT2.desktop`
-  - **OpenRCT2 Icon (Linux)**: `~/.local/share/icons/OpenRCT2.png`
+  - **OpenRCT2 Icons (Linux)**: `~/.local/share/icons/hicolor/256x256/apps/openrct2.png` & `~/.local/share/icons/openrct2.png`
   - **OpenRCT2 User Binary (Linux)**: `~/.local/bin/openrct2` (symlink to `/opt/OpenRCT2/OpenRCT2.AppImage`)
   - **OpenRCT2 User Directory (macOS)**: `~/Library/Application Support/OpenRCT2/`
   - **OpenRCT2 User Directory (Windows)**: `%USERPROFILE%\Documents\OpenRCT2\` (or `%APPDATA%\OpenRCT2\`)
 
 ---
 
-## 2. Destructive Safety & Backup Policy
+## 2. Destructive Safety & Idempotent Backup Policy
 
 - **Mandatory Non-Destructive Backups**: Any installation target or deployment script (`Makefile`, `setup.sh`, `setup.ps1`) must create timestamped backups (`.bak.<timestamp>`) before overwriting or modifying any existing user configuration, desktop, or script file.
+- **Idempotency Requirement**: Backups must only be generated if the existing file content actually differs (`! cmp -s "$src" "$dest"`), preventing backup accumulation across identical re-installations.
+- **Clean Uninstallation**: Maintain a working `make uninstall` target that removes deployed files, desktop entries, and symlinks cleanly without altering unrelated configs.
 - **Preserve Unrelated Configuration**: When updating engine settings, keybindings, or interface options, avoid stripping or modifying unrelated user preferences unless explicitly requested.
 
 ---
 
-## 3. Configuration & Shortcut Hygiene
+## 3. Configuration & Desktop Standards Hygiene
 
+- **FreeDesktop XDG Compliance**:
+  - `desktop/OpenRCT2.desktop` must follow the FreeDesktop Desktop Entry Specification, including `StartupWMClass=openrct2`, `PrefersNonDefaultGPU=true`, and all standard MIME types / URI handlers (`x-scheme-handler/openrct2`).
+  - Icons must be installed into standard hicolor theme directories and icon caches must be updated (`update-desktop-database`, `gtk-update-icon-cache`).
 - **Control Scheme Intent**:
   - Maintain the curated WASD viewport navigation and Q/E rotation mappings in `shortcuts.json`.
   - Ensure all JSON files pass validation (`jq . config/shortcuts.json`).
@@ -47,11 +52,12 @@ Any agent modifying this repository must follow these core principles.
 - **Maintain Bidirectional Sync Targets**:
   - Every config and desktop file tracked in the repository must be integrated into:
     1. `make install` & `make install-<target>`
-    2. `make sync` (to pull in-game/desktop tweaks from the system back into the repo, sanitizing personal paths)
-    3. `make diff` (to inspect differences between repo and active system configs)
-    4. `setup.sh` (Linux / macOS fallback script)
-    5. `setup.ps1` (Windows PowerShell script)
-    6. `README.md` (documentation and shortcuts table)
+    2. `make uninstall`
+    3. `make sync` (to pull in-game/desktop tweaks from the system back into the repo, sanitizing personal paths)
+    4. `make diff` (to inspect differences between repo and active system configs)
+    5. `setup.sh` (Linux / macOS fallback script)
+    6. `setup.ps1` (Windows PowerShell script)
+    7. `README.md` (documentation and shortcuts table)
 
 ---
 
@@ -79,7 +85,7 @@ Any agent modifying this repository must follow these core principles.
 ## 7. Verification Checklist for Agents
 
 Before completing any changes:
-1. Run `make check` to execute the full local validation suite (syntax, JSON validity, path invariants, and dry install).
+1. Run `make check` to execute the full local validation suite (syntax, JSON validity, path invariants, idempotent install, and uninstall test).
 2. Verify `git diff` contains no hardcoded usernames or personal paths.
 3. Run `make -n install` or `make help` to verify `Makefile` syntax.
 4. If shell scripts were modified, run `bash -n <script.sh>` to verify syntax.
