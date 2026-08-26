@@ -1,6 +1,6 @@
 # Agent Guidelines for openrct2-configs
 
-This repository contains curated configuration files, keybinding presets, and deployment scripts for **OpenRCT2** across Linux, macOS, and Windows.
+This repository contains curated configuration files, keybinding presets, desktop integrations, and deployment scripts for **OpenRCT2** across Linux, macOS, and Windows.
 
 Any agent modifying this repository must follow these core principles.
 
@@ -8,10 +8,16 @@ Any agent modifying this repository must follow these core principles.
 
 ## 1. Portability & Path Invariants
 
-- **Never Commit Personal User Paths**: Never commit absolute personal paths like `/home/<username>/` or `C:\Users\<username>\` into configuration files or scripts.
-- **Use `__HOME__` and `__USER__` Placeholders**: In `config/config.ini`, all user home paths must use `__HOME__` and player names must use `__USER__`. Deployment tooling (`Makefile`, `setup.sh`, `setup.ps1`) dynamically substitutes these at installation time.
+- **Never Commit Personal User Paths**: Never commit absolute personal paths like `/home/<username>/` or `C:\Users\<username>\` into configuration files, desktop entries, or scripts.
+- **Use `__HOME__` and `__USER__` Placeholders**:
+  - In `config/config.ini`, user home paths use `__HOME__` and player names use `__USER__`.
+  - In `desktop/OpenRCT2.desktop`, icon paths use `__HOME__` (`Icon=__HOME__/.local/share/icons/OpenRCT2.png`).
+  - Deployment tooling (`Makefile`, `setup.sh`, `setup.ps1`) dynamically substitutes these at installation time.
 - **Respect Standard Directory Structures**:
   - **OpenRCT2 User Directory (Linux)**: `~/.config/OpenRCT2/`
+  - **OpenRCT2 Desktop Entry (Linux)**: `~/.local/share/applications/OpenRCT2.desktop`
+  - **OpenRCT2 Icon (Linux)**: `~/.local/share/icons/OpenRCT2.png`
+  - **OpenRCT2 User Binary (Linux)**: `~/.local/bin/openrct2` (symlink to `/opt/OpenRCT2/OpenRCT2.AppImage`)
   - **OpenRCT2 User Directory (macOS)**: `~/Library/Application Support/OpenRCT2/`
   - **OpenRCT2 User Directory (Windows)**: `%USERPROFILE%\Documents\OpenRCT2\` (or `%APPDATA%\OpenRCT2\`)
 
@@ -19,7 +25,7 @@ Any agent modifying this repository must follow these core principles.
 
 ## 2. Destructive Safety & Backup Policy
 
-- **Mandatory Non-Destructive Backups**: Any installation target or deployment script (`Makefile`, `setup.sh`, `setup.ps1`) must create timestamped backups (`.bak.<timestamp>`) before overwriting or modifying any existing user configuration file.
+- **Mandatory Non-Destructive Backups**: Any installation target or deployment script (`Makefile`, `setup.sh`, `setup.ps1`) must create timestamped backups (`.bak.<timestamp>`) before overwriting or modifying any existing user configuration, desktop, or script file.
 - **Preserve Unrelated Configuration**: When updating engine settings, keybindings, or interface options, avoid stripping or modifying unrelated user preferences unless explicitly requested.
 
 ---
@@ -39,9 +45,9 @@ Any agent modifying this repository must follow these core principles.
 
 - **Cross-Platform Consistency**: When adding or updating configurations, ensure compatibility across Linux, macOS, and Windows environments.
 - **Maintain Bidirectional Sync Targets**:
-  - Every config file tracked in the repository must be integrated into:
+  - Every config and desktop file tracked in the repository must be integrated into:
     1. `make install` & `make install-<target>`
-    2. `make sync` (to pull in-game tweaks from the system back into the repo, sanitizing personal paths)
+    2. `make sync` (to pull in-game/desktop tweaks from the system back into the repo, sanitizing personal paths)
     3. `make diff` (to inspect differences between repo and active system configs)
     4. `setup.sh` (Linux / macOS fallback script)
     5. `setup.ps1` (Windows PowerShell script)
@@ -52,7 +58,7 @@ Any agent modifying this repository must follow these core principles.
 ## 5. Documentation Boundaries & Mandatory Updates
 
 - **Mandatory Documentation Synchronization**:
-  - **Every agent change must update documentation**: Whenever shortcuts, engine settings, build targets, directory layouts, or script mechanics are modified, the relevant documentation **must** be updated within the same pull request/commit.
+  - **Every agent change must update documentation**: Whenever shortcuts, engine settings, desktop entries, build targets, directory layouts, or script mechanics are modified, the relevant documentation **must** be updated within the same pull request/commit.
 - **`README.md` is for Users**:
   - `README.md` must focus purely on user-facing concerns: installation commands, directory setup, shortcuts catalog, engine features, and player-facing usage.
   - Keep `README.md` clear, accessible, and free of internal agent mechanics or maintenance minutiae.
