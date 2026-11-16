@@ -24,17 +24,28 @@
     * In `configs/desktop/OpenRCT2.desktop`, use `Exec=__OPENRCT2_EXEC__ %u` and `Icon=openrct2`.
     * Deployment (`rct config install`, `rct setup`) dynamically substitutes placeholders via display probing and
       Steam/GOG discovery, and reverse synchronization (`rct config sync`) sanitizes live values back to placeholders.
-  * **Respect platform standard directories**:
+  * **Respect platform standard directories (XDG Base Dir v0.8, Apple, and Microsoft `FOLDERID_UserProgramFiles`)**:
     * **OpenRCT2 user directory**: `~/.config/OpenRCT2/` on Linux (`$XDG_CONFIG_HOME/OpenRCT2`),
       `~/Library/Application Support/OpenRCT2/` on macOS, and `%USERPROFILE%\Documents\OpenRCT2\` on Windows.
-    * **CLI configuration and user catalog**: `~/.config/openrct2-cli/` on Linux,
-      `~/Library/Application Support/openrct2-cli/` on macOS, and `%LOCALAPPDATA%\openrct2-cli\` on Windows (overridable
-      via `RCT_CONFIG_DIR`), with custom add-ons in `<ConfigDir>/catalog.d/*.json`.
-    * **Binaries and engine bundles**: `~/.local/bin/` on Linux (`rct` and `openrct2` AppImage) and macOS (`rct` and
-      `openrct2` wrapper for `~/Applications/OpenRCT2.app`), and `%USERPROFILE%\Games\OpenRCT2\bin\` +
-      `%USERPROFILE%\Games\OpenRCT2\engine\` on Windows.
-    * **FreeDesktop integration (Linux)**: `~/.local/share/applications/OpenRCT2.desktop`,
-      `~/.local/share/icons/hicolor/256x256/apps/openrct2.png`, and `~/.local/share/icons/openrct2.png`.
+    * **CLI configuration and user catalog (human-edited, dotfile-safe)**: `~/.config/openrct2-cli/` on Linux
+      (`$XDG_CONFIG_HOME/openrct2-cli`), `~/Library/Application Support/openrct2-cli/` on macOS, and
+      `%LOCALAPPDATA%\openrct2-cli\` on Windows (overridable via `RCT_CONFIG_DIR`), holding `config.json` and
+      `catalog.d/*.json`. Never write machine-generated install receipts into `ConfigDir`.
+    * **CLI state and receipts (machine-generated)**: `~/.local/state/openrct2-cli/` on Linux
+      (`$XDG_STATE_HOME/openrct2-cli`), `~/Library/Application Support/openrct2-cli/state/` on macOS, and
+      `%LOCALAPPDATA%\openrct2-cli\state\` on Windows (overridable via `RCT_STATE_DIR`), holding `engine-receipt.json`
+      and `addon-receipts.json`.
+    * **Engine payloads vs PATH entrypoints**:
+      * **Linux**: Store the AppImage payload in `~/.local/share/openrct2-cli/engine/OpenRCT2.AppImage`
+        (`$XDG_DATA_HOME/openrct2-cli/engine/`) and expose `~/.local/bin/openrct2` as an atomic symlink alongside
+        `~/.local/bin/rct` so `.bak.*` binaries never bloat `~/.local/bin` or pollute `$PATH` tab-completion.
+      * **macOS**: Extract `~/Applications/OpenRCT2.app` and expose `~/.local/bin/openrct2` as a POSIX wrapper alongside
+        `~/.local/bin/rct`.
+      * **Windows**: Use Microsoft's `FOLDERID_UserProgramFiles` standard (`%LOCALAPPDATA%\Programs\OpenRCT2\engine\`
+        and `%LOCALAPPDATA%\Programs\OpenRCT2\bin\`) rather than creating custom folders in `%USERPROFILE%`.
+    * **FreeDesktop integration (Linux)**: `~/.local/share/applications/OpenRCT2.desktop` and
+      `~/.local/share/icons/hicolor/256x256/apps/openrct2.png` (`$XDG_DATA_HOME`), without writing duplicate icons to the
+      top-level `icons/` root.
 
 * **Destructive safety, idempotence, and security policy**:
   * **Mandatory atomic writes and change-detected backups**: All configuration, catalog, and receipt writes must use

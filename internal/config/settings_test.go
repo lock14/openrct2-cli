@@ -8,12 +8,20 @@ import (
 
 func TestResolveForPlatforms(t *testing.T) {
 	t.Setenv("RCT_CONFIG_DIR", "")
+	t.Setenv("RCT_STATE_DIR", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
 
 	linuxPaths := ResolveFor("linux")
 	if !strings.HasSuffix(filepath.ToSlash(linuxPaths.OpenRCT2Dir), "/.config/OpenRCT2") {
 		t.Errorf("linux OpenRCT2Dir = %q", linuxPaths.OpenRCT2Dir)
+	}
+	if !strings.HasSuffix(filepath.ToSlash(linuxPaths.StateDir), "/.local/state/openrct2-cli") {
+		t.Errorf("linux StateDir = %q", linuxPaths.StateDir)
+	}
+	if !strings.HasSuffix(filepath.ToSlash(linuxPaths.EngineDir), "/.local/share/openrct2-cli/engine") {
+		t.Errorf("linux EngineDir = %q", linuxPaths.EngineDir)
 	}
 	if !strings.HasSuffix(filepath.ToSlash(linuxPaths.DesktopDir), "/.local/share/applications") {
 		t.Errorf("linux DesktopDir = %q", linuxPaths.DesktopDir)
@@ -26,6 +34,9 @@ func TestResolveForPlatforms(t *testing.T) {
 	if !strings.HasSuffix(filepath.ToSlash(darwinPaths.OpenRCT2Dir), "/Library/Application Support/OpenRCT2") {
 		t.Errorf("darwin OpenRCT2Dir = %q", darwinPaths.OpenRCT2Dir)
 	}
+	if !strings.HasSuffix(filepath.ToSlash(darwinPaths.StateDir), "/Library/Application Support/openrct2-cli/state") {
+		t.Errorf("darwin StateDir = %q", darwinPaths.StateDir)
+	}
 	if !strings.HasSuffix(filepath.ToSlash(darwinPaths.EngineDir), "/Applications/OpenRCT2.app") {
 		t.Errorf("darwin EngineDir = %q", darwinPaths.EngineDir)
 	}
@@ -34,7 +45,11 @@ func TestResolveForPlatforms(t *testing.T) {
 	if !strings.HasSuffix(filepath.ToSlash(winPaths.OpenRCT2Dir), "/Documents/OpenRCT2") {
 		t.Errorf("windows OpenRCT2Dir = %q", winPaths.OpenRCT2Dir)
 	}
-	if !strings.HasSuffix(filepath.ToSlash(winPaths.ManagedEngineBinaryForOS("windows")), "/engine/openrct2.exe") {
+	if !strings.HasSuffix(filepath.ToSlash(winPaths.BinDir), "/Programs/OpenRCT2/bin") {
+		t.Errorf("windows BinDir = %q", winPaths.BinDir)
+	}
+	winBin := filepath.ToSlash(winPaths.ManagedEngineBinaryForOS("windows"))
+	if !strings.HasSuffix(winBin, "/Programs/OpenRCT2/engine/openrct2.exe") {
 		t.Errorf("windows ManagedEngineBinary = %q", winPaths.ManagedEngineBinaryForOS("windows"))
 	}
 }

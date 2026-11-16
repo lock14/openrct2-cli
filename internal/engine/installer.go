@@ -225,10 +225,11 @@ func (ins *Installer) Install(
 	}
 
 	destBin := ins.Paths.ManagedEngineBinaryForOS(ins.goos())
+	payloadBin := ins.Paths.EnginePayloadForOS(ins.goos())
 	existingReceipt, _ := LoadReceipt(ins.Paths.EngineReceiptFile)
 
 	if !force && !checkUpdate {
-		if fi, err := os.Stat(destBin); err == nil && !fi.IsDir() && fi.Size() > 0 {
+		if isBinaryReady(destBin) {
 			if existingReceipt == nil || strings.EqualFold(existingReceipt.Channel, ch.ID) {
 				verLabel := ""
 				if existingReceipt != nil && existingReceipt.Tag != "" {
@@ -251,15 +252,13 @@ func (ins *Installer) Install(
 		return nil, err
 	}
 
-	if checkUpdate && !force && existingReceipt != nil {
-		if fi, statErr := os.Stat(destBin); statErr == nil && !fi.IsDir() && fi.Size() > 0 {
-			sameChannel := strings.EqualFold(existingReceipt.Channel, ch.ID)
-			sameTag := existingReceipt.Tag != "" && existingReceipt.Tag == tag
-			sameHash := sha256Hex == "" || strings.EqualFold(existingReceipt.SHA256, sha256Hex)
-			if sameChannel && sameTag && sameHash {
-				fmt.Fprintf(ins.Out, "✓ %s (%s) is already up to date\n", ch.EffectiveDisplayName(), tag)
-				return existingReceipt, nil
-			}
+	if checkUpdate && !force && existingReceipt != nil && isBinaryReady(destBin) {
+		sameChannel := strings.EqualFold(existingReceipt.Channel, ch.ID)
+		sameTag := existingReceipt.Tag != "" && existingReceipt.Tag == tag
+		sameHash := sha256Hex == "" || strings.EqualFold(existingReceipt.SHA256, sha256Hex)
+		if sameChannel && sameTag && sameHash {
+			fmt.Fprintf(ins.Out, "✓ %s (%s) is already up to date\n", ch.EffectiveDisplayName(), tag)
+			return existingReceipt, nil
 		}
 	}
 
@@ -292,10 +291,9 @@ func (ins *Installer) Install(
 			return nil, err
 		}
 	default:
-		if _, err := fsutil.CopyFileAtomic(tmpPayload, destBin, 0o755); err != nil {
+		if err := ins.installLinuxAppImage(tmpPayload, payloadBin, destBin); err != nil {
 			return nil, err
 		}
-		_ = os.Chmod(destBin, 0o755)
 	}
 
 	receipt := Receipt{

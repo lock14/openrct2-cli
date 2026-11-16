@@ -50,6 +50,7 @@ func runConfigShow(cmd *cobra.Command, _ []string) error {
 
 	fmt.Fprintf(out, "CLI Config File:  %s\n", paths.ConfigFile)
 	fmt.Fprintf(out, "User Catalog Dir: %s\n", paths.CatalogDir)
+	fmt.Fprintf(out, "CLI State Dir:    %s\n", paths.StateDir)
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "channel:          %s (%s)\n", cfg.EffectiveChannel(), config.ValueSource(cfg.Channel))
 	fmt.Fprintf(out, "openrct2_dir:     %s (%s)\n", paths.OpenRCT2Dir, config.ValueSource(cfg.OpenRCT2Dir))

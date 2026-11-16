@@ -20,7 +20,9 @@ and music packs, and top community JavaScript plugins via `embed.go` (`openrct2c
   2. Deploys `config.ini` (auto-detecting monitor resolution and HiDPI `window_scale`), WASD `shortcuts.json`, and Linux
      FreeDesktop `.desktop` + `hicolor` icons with change-detected `.bak.<timestamp>` backups.
   3. Installs portable OpenRCT2 in user-space (`OpenRCT2/OpenRCT2` for `release`, `OpenRCT2/OpenRCT2-binaries` for
-     `develop`) with SHA-256 verification and `os.OpenRoot`-jailed bundle extraction.
+     `develop`) under `$XDG_DATA_HOME/openrct2-cli/engine` (Linux), `~/Applications/OpenRCT2.app` (macOS), or
+     `%LOCALAPPDATA%\Programs\OpenRCT2\engine` (Windows) with SHA-256 verification, `os.OpenRoot`-jailed bundle
+     extraction, and install receipts stored in `$XDG_STATE_HOME/openrct2-cli` (`StateDir`).
   4. Installs SHA-256-verified official OpenRCT2 asset packs (`openmusic`, `opensound`, `title-sequences`).
   5. Installs SHA-256-verified community JavaScript plugins (`ride-vehicle-editor`, `park-rating-inspector`,
      `scenery-manager`, `benchwarmer`, `ride-price-manager`, `soft-guest-cap-calculator`, `advanced-track`,

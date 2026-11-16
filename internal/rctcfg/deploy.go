@@ -391,7 +391,7 @@ func deployDesktopFile(paths *config.Paths, execPath string, out io.Writer) erro
 }
 
 func deployIcons(paths *config.Paths, out io.Writer) error {
-	if paths.HicolorIconDir == "" || paths.IconDir == "" {
+	if paths.HicolorIconDir == "" {
 		return nil
 	}
 	iconBytes, err := fs.ReadFile(openrct2cli.FS, "configs/desktop/openrct2.png")
@@ -399,27 +399,18 @@ func deployIcons(paths *config.Paths, out io.Writer) error {
 		return fmt.Errorf("reading embedded openrct2.png: %w", err)
 	}
 
-	targets := []string{
-		filepath.Join(paths.HicolorIconDir, "openrct2.png"),
-		filepath.Join(paths.IconDir, "openrct2.png"),
+	dst := filepath.Join(paths.HicolorIconDir, "openrct2.png")
+	changed, bkp, wErr := fsutil.WriteFileAtomicIfChanged(dst, iconBytes, 0o644)
+	if wErr != nil {
+		return wErr
 	}
-	anyChanged := false
-	for _, dst := range targets {
-		changed, bkp, wErr := fsutil.WriteFileAtomicIfChanged(dst, iconBytes, 0o644)
-		if wErr != nil {
-			return wErr
-		}
-		if bkp != "" {
-			fmt.Fprintf(out, "  Backed up existing icon -> %s\n", filepath.Base(bkp))
-		}
-		if changed {
-			anyChanged = true
-		}
+	if bkp != "" {
+		fmt.Fprintf(out, "  Backed up existing icon -> %s\n", filepath.Base(bkp))
 	}
-	if anyChanged {
-		fmt.Fprintf(out, "✓ Installed OpenRCT2 icons -> %s\n", paths.HicolorIconDir)
+	if changed {
+		fmt.Fprintf(out, "✓ Installed OpenRCT2 icon -> %s\n", dst)
 	} else {
-		fmt.Fprintf(out, "✓ OpenRCT2 icons already up to date\n")
+		fmt.Fprintf(out, "✓ OpenRCT2 icon already up to date -> %s\n", dst)
 	}
 	return nil
 }

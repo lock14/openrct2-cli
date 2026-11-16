@@ -65,6 +65,51 @@ func writeWindowsCmdShim(shimPath, exePath string) error {
 	return err
 }
 
+func isBinaryReady(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	fi, err := os.Stat(path)
+	return err == nil && !fi.IsDir() && fi.Size() > 0
+}
+
+func writeSymlinkAtomic(linkDest, targetPath string) error {
+	parent := filepath.Dir(linkDest)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return err
+	}
+	tmpLink := filepath.Join(parent, fmt.Sprintf(".rct-link-%d", os.Getpid()))
+	_ = os.Remove(tmpLink)
+	if err := os.Symlink(targetPath, tmpLink); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpLink, linkDest); err != nil {
+		_ = os.Remove(tmpLink)
+		return err
+	}
+	return nil
+}
+
+func (ins *Installer) installLinuxAppImage(tmpPayload, payloadPath, linkDest string) error {
+	if strings.TrimSpace(payloadPath) == "" || filepath.Clean(payloadPath) == filepath.Clean(linkDest) {
+		if _, err := fsutil.CopyFileAtomic(tmpPayload, linkDest, 0o755); err != nil {
+			return err
+		}
+		return os.Chmod(linkDest, 0o755)
+	}
+	if _, err := fsutil.CopyFileAtomic(tmpPayload, payloadPath, 0o755); err != nil {
+		return err
+	}
+	if err := os.Chmod(payloadPath, 0o755); err != nil {
+		return err
+	}
+	if err := writeSymlinkAtomic(linkDest, payloadPath); err != nil {
+		// Fallback to POSIX wrapper if filesystem forbids symlinks
+		return writePosixWrapper(linkDest, payloadPath)
+	}
+	return nil
+}
+
 func (ins *Installer) installMacAppZip(zipPath, wrapperDest string) error {
 	zr, err := zip.OpenReader(zipPath)
 	if err != nil {

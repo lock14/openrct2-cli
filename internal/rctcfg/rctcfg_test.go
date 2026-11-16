@@ -17,6 +17,7 @@ func makeTestPaths(t *testing.T, targetOS string) *config.Paths {
 	p := config.ResolveFor(targetOS)
 	p.SetOpenRCT2Dir(filepath.Join(root, "openrct2"))
 	p.SetConfigDir(filepath.Join(root, "cli-config"))
+	p.SetStateDir(filepath.Join(root, "cli-state"))
 	p.BinDir = filepath.Join(root, "bin")
 	p.EngineDir = filepath.Join(root, "engine")
 	if targetOS == "linux" {

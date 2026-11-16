@@ -107,11 +107,13 @@ func TestInstallerLinuxMacWindowsAndUpdateSkip(t *testing.T) {
 	}
 	ch := cat.Channels["release"]
 
-	// 1. Linux AppImage + idempotent update check
+	// 1. Linux AppImage + symlink + idempotent update check
 	linuxRoot := t.TempDir()
 	linuxPaths := config.ResolveFor("linux")
 	linuxPaths.SetConfigDir(filepath.Join(linuxRoot, "cfg"))
+	linuxPaths.SetStateDir(filepath.Join(linuxRoot, "state"))
 	linuxPaths.SetBinDirForOS("linux", filepath.Join(linuxRoot, "bin"))
+	linuxPaths.EngineDir = filepath.Join(linuxRoot, "engine")
 
 	var out bytes.Buffer
 	ins := NewInstaller(linuxPaths, &out)
@@ -126,6 +128,12 @@ func TestInstallerLinuxMacWindowsAndUpdateSkip(t *testing.T) {
 	}
 	if rec.Tag != "v0.5.7" {
 		t.Fatalf("rec.Tag = %q", rec.Tag)
+	}
+	if _, err := os.Stat(filepath.Join(linuxRoot, "engine", "OpenRCT2.AppImage")); err != nil {
+		t.Fatalf("expected AppImage payload in EngineDir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(linuxRoot, "bin", "openrct2")); err != nil {
+		t.Fatalf("expected symlink/wrapper in BinDir: %v", err)
 	}
 	prevDownloads := downloads
 	if _, err := ins.Install(context.Background(), ch, false, true); err != nil {
@@ -155,6 +163,7 @@ func TestInstallerLinuxMacWindowsAndUpdateSkip(t *testing.T) {
 	macRoot := t.TempDir()
 	macPaths := config.ResolveFor("darwin")
 	macPaths.SetConfigDir(filepath.Join(macRoot, "cfg"))
+	macPaths.SetStateDir(filepath.Join(macRoot, "state"))
 	macPaths.BinDir = filepath.Join(macRoot, "bin")
 	macPaths.SetAppsDir("darwin", filepath.Join(macRoot, "Apps"))
 
@@ -177,6 +186,7 @@ func TestInstallerLinuxMacWindowsAndUpdateSkip(t *testing.T) {
 	winRoot := t.TempDir()
 	winPaths := config.ResolveFor("windows")
 	winPaths.SetConfigDir(filepath.Join(winRoot, "cfg"))
+	winPaths.SetStateDir(filepath.Join(winRoot, "state"))
 	winPaths.BinDir = filepath.Join(winRoot, "bin")
 	winPaths.EngineDir = filepath.Join(winRoot, "engine")
 

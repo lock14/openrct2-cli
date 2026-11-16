@@ -182,7 +182,8 @@ func TestCLISubcommandsEndToEnd(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(rct1Dir, "Data", "csg1.dat"), []byte("csg1"), 0o644)
 
 	if out, _, err := execCLI(t, "games", "scan", "--root", steamMock, "--dry-run"); err != nil ||
-		!strings.Contains(out, rct2Dir) {
+		!strings.Contains(out, "Roller Coaster Tycoon 2") ||
+		!strings.Contains(out, "RollerCoaster Tycoon Deluxe") {
 		t.Fatalf("games scan --dry-run = (%q, %v)", out, err)
 	}
 	if _, _, err := execCLI(t, "games", "scan", "--root", steamMock); err != nil {

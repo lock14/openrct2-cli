@@ -49,6 +49,11 @@ func ResolveBinary(paths *config.Paths, headless bool, targetOS string) (string,
 				return cand, nil
 			}
 		}
+		if payload := paths.EnginePayloadForOS(targetOS); payload != "" {
+			if fi, err := os.Stat(payload); err == nil && !fi.IsDir() {
+				return payload, nil
+			}
+		}
 	}
 
 	if targetOS == "linux" {

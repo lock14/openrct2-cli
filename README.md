@@ -93,8 +93,8 @@ cd openrct2-cli
 # Compile rct.exe to your Go bin path
 go install ./cmd/rct
 
-# Or compile directly to your OpenRCT2 binary folder:
-go build -o "$env:USERPROFILE\Games\OpenRCT2\bin\rct.exe" ./cmd/rct
+# Or compile directly to the standard Windows per-user application binary folder:
+go build -o "$env:LOCALAPPDATA\Programs\OpenRCT2\bin\rct.exe" ./cmd/rct
 ```
 
 ## Automated setup (`rct setup`)
@@ -283,21 +283,24 @@ rct addons install ride-painter
 
 | Variable | Description |
 | :--- | :--- |
-| `RCT_CONFIG_DIR` | Overrides the CLI configuration directory (`config.json`, `catalog.d/`, and receipt files) |
+| `RCT_CONFIG_DIR` | Overrides the CLI configuration directory (`config.json` and `catalog.d/`) |
+| `RCT_STATE_DIR` | Overrides the CLI state directory (`engine-receipt.json` and `addon-receipts.json`) |
 | `XDG_CONFIG_HOME` | Respected on Linux when resolving default `~/.config/OpenRCT2` and `~/.config/openrct2-cli` |
-| `XDG_DATA_HOME` | Respected on Linux when resolving `~/.local/share/applications` and `~/.local/share/icons` |
+| `XDG_DATA_HOME` | Respected on Linux when resolving `~/.local/share/openrct2-cli/engine`, `applications`, and `icons` |
+| `XDG_STATE_HOME` | Respected on Linux when resolving default `~/.local/state/openrct2-cli` |
 
 ## Directory layouts
 
-| Component | Linux | macOS | Windows |
+| Component | Linux (XDG) | macOS | Windows |
 | :--- | :--- | :--- | :--- |
 | OpenRCT2 user data | `~/.config/OpenRCT2/` | `~/Library/Application Support/OpenRCT2/` | `%USERPROFILE%\Documents\OpenRCT2\` |
-| Installed plugins | `<OpenRCT2Dir>/plugin/*.js` | `<OpenRCT2Dir>/plugin/*.js` | `<OpenRCT2Dir>/plugin\*.js` |
+| Installed plugins | `<OpenRCT2Dir>/plugin/*.js` | `<OpenRCT2Dir>/plugin/*.js` | `<OpenRCT2Dir>\plugin\*.js` |
 | Installed asset packs | `<OpenRCT2Dir>/assetpack/*.parkap` | `<OpenRCT2Dir>/assetpack/*.parkap` | `<OpenRCT2Dir>\assetpack\*.parkap` |
 | CLI settings & `catalog.d` | `~/.config/openrct2-cli/` | `~/Library/Application Support/openrct2-cli/` | `%LOCALAPPDATA%\openrct2-cli\` |
-| CLI binary (`rct`) | `~/.local/bin/rct` | `~/.local/bin/rct` | `%USERPROFILE%\Games\OpenRCT2\bin\rct.exe` |
-| Portable OpenRCT2 engine | `~/.local/bin/openrct2` (`.AppImage`) | `~/Applications/OpenRCT2.app` + `~/.local/bin/openrct2` | `%USERPROFILE%\Games\OpenRCT2\engine\` + `bin\openrct2.cmd` |
-| FreeDesktop launcher | `~/.local/share/applications/OpenRCT2.desktop` | N/A (`OpenRCT2.app` bundle) | N/A |
+| CLI install receipts | `~/.local/state/openrct2-cli/` | `~/Library/Application Support/openrct2-cli/state/` | `%LOCALAPPDATA%\openrct2-cli\state\` |
+| CLI & PATH entrypoints | `~/.local/bin/{rct,openrct2}` | `~/.local/bin/{rct,openrct2}` | `%LOCALAPPDATA%\Programs\OpenRCT2\bin\` |
+| Portable OpenRCT2 engine | `~/.local/share/openrct2-cli/engine/` | `~/Applications/OpenRCT2.app` | `%LOCALAPPDATA%\Programs\OpenRCT2\engine\` |
+| FreeDesktop launcher & icon | `~/.local/share/{applications,icons/hicolor}` | N/A (`OpenRCT2.app` bundle) | N/A |
 
 ## Contributing
 

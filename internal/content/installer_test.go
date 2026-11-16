@@ -62,6 +62,7 @@ func TestInstallAndUninstallFileAndZipAddons(t *testing.T) {
 	paths := config.ResolveFor("linux")
 	paths.SetOpenRCT2Dir(filepath.Join(root, "openrct2"))
 	paths.SetConfigDir(filepath.Join(root, "cfg"))
+	paths.SetStateDir(filepath.Join(root, "state"))
 
 	// Create an unrelated custom user object to ensure UninstallAddon never touches it
 	unrelatedObj := filepath.Join(paths.OpenRCT2Dir, "object", "custom", "myride.parkobj")

@@ -36,7 +36,7 @@ make check
 | `configs/desktop/` | FreeDesktop compliant `OpenRCT2.desktop` template and 256x256 `openrct2.png` icon |
 | `cmd/rct/` | Cobra CLI command tree (`rct`, `setup`, `engine`, `games`, `addons`, `config`) |
 | `internal/catalog/` | Strict JSON entity decoder, two-layer `catalog.d` loader, and shorthand query matcher |
-| `internal/config/` | Platform XDG, macOS Application Support, and Windows path resolution plus `config.json` |
+| `internal/config/` | XDG Base Dir, macOS Application Support, and Windows `Programs` path resolution plus `config.json` |
 | `internal/content/` | Verified downloader and `os.OpenRoot` extractor for `.parkap`, `.parkobj`, `.parkseq`, and `.js` |
 | `internal/display/` | Native display resolution detection and HiDPI `window_scale` calculation |
 | `internal/engine/` | GitHub Releases installer (`release` and `develop`), `.app`/`.zip` extractor, and launcher |

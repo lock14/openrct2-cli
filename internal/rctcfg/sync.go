@@ -254,6 +254,11 @@ func Uninstall(paths *config.Paths, removeEngine bool, targetOS string, out io.W
 			}
 			shim := filepath.Join(paths.BinDir, "openrct2.cmd")
 			_ = os.Remove(shim)
+		} else if paths.EngineDir != "" && filepath.Clean(paths.EngineDir) != filepath.Clean(paths.BinDir) {
+			if _, err := os.Stat(paths.EngineDir); err == nil {
+				_ = os.RemoveAll(paths.EngineDir)
+				fmt.Fprintf(out, "✓ Removed engine directory %s\n", paths.EngineDir)
+			}
 		}
 		if paths.EngineReceiptFile != "" {
 			_ = os.Remove(paths.EngineReceiptFile)
