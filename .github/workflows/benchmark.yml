@@ -1,0 +1,103 @@
+name: Benchmark Regression Check
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  detect-packages:
+    name: Detect Changed Packages
+    runs-on: ubuntu-latest
+    outputs:
+      packages: ${{ steps.set-matrix.outputs.packages }}
+      empty: ${{ steps.set-matrix.outputs.empty }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Determine changed packages
+        id: set-matrix
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASE="origin/$BASE_REF"
+          else
+            BASE="HEAD~1"
+          fi
+
+          GO_FILES=$(git diff --name-only "$BASE...HEAD" -- '*.go')
+          if [ -z "$GO_FILES" ]; then
+            echo "packages=[]" >> $GITHUB_OUTPUT
+            echo "empty=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          PKGS=()
+          for dir in $(echo "$GO_FILES" | xargs -n1 dirname | sort -u); do
+            if [ "$dir" = "." ]; then
+              continue
+            fi
+            if git rev-parse --verify "$BASE:$dir" >/dev/null 2>&1 && [ -d "$dir" ]; then
+              PKGS+=("./$dir")
+            fi
+          done
+
+          if [ ${#PKGS[@]} -eq 0 ]; then
+            echo "packages=[]" >> $GITHUB_OUTPUT
+            echo "empty=true" >> $GITHUB_OUTPUT
+          else
+            JSON=$(printf "%s\n" "${PKGS[@]}" | jq -R . | jq -s -c .)
+            echo "packages=$JSON" >> $GITHUB_OUTPUT
+            echo "empty=false" >> $GITHUB_OUTPUT
+          fi
+
+  benchmark:
+    name: Benchmark (${{ matrix.pkg }})
+    needs: detect-packages
+    if: ${{ needs.detect-packages.outputs.empty == 'false' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg: ${{ fromJson(needs.detect-packages.outputs.packages) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: 'stable'
+
+      - name: Install benchstat and benchdiff
+        run: |
+          go install golang.org/x/perf/cmd/benchstat@latest
+          go install filippo.io/mostly-harmless/benchdiff@latest
+
+      - name: Run benchdiff
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          TARGET_PKG: ${{ matrix.pkg }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASE="origin/$BASE_REF"
+          else
+            BASE="HEAD~1"
+          fi
+          benchdiff -base-ref "$BASE" -- -run '^$' -bench . -benchmem -count=6 -benchtime=500ms -timeout=15m "$TARGET_PKG"

@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "kind": "addon",
+  "id": "opensound",
+  "display_name": "OpenSoundEffects",
+  "addon_type": "assetpack",
+  "category": "Audio & Music",
+  "author": "OpenRCT2 Team",
+  "version": "v1.0.6",
+  "description": "Official OpenRCT2 replacement sound effects asset pack and audio objects",
+  "aliases": [
+    "sound",
+    "opensfx",
+    "openrct2-sound"
+  ],
+  "homepage": "https://github.com/OpenRCT2/OpenSoundEffects",
+  "source": {
+    "repo": "OpenRCT2/OpenSoundEffects",
+    "url": "https://github.com/OpenRCT2/OpenSoundEffects/releases/download/v1.0.6/opensound.zip",
+    "sha256": "06b90f3e19c216752df441d551b26a9e3e1ba7755bdd2102504b73bf993608be",
+    "mode": "zip",
+    "target_dir": "."
+  },
+  "targets": [
+    "assetpack/openrct2.sound.parkap",
+    "object/official/audio/openrct2.audio.additional.parkobj"
+  ]
+}

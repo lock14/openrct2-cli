@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "kind": "addon",
+  "id": "soft-guest-cap-calculator",
+  "display_name": "Soft Guest Cap Calculator",
+  "addon_type": "plugin",
+  "category": "Park Management",
+  "author": "Sadret",
+  "version": "v2.0.3",
+  "description": "Display per-ride soft guest cap contributions and total guest generation thresholds",
+  "aliases": [
+    "sgcc",
+    "guest-cap"
+  ],
+  "homepage": "https://github.com/Sadret/openrct2-soft-guest-cap-calculator",
+  "source": {
+    "repo": "Sadret/openrct2-soft-guest-cap-calculator",
+    "url": "https://github.com/Sadret/openrct2-soft-guest-cap-calculator/releases/download/v2.0.3/soft-guest-cap-calculator-v2.0.3.js",
+    "sha256": "acfddd8861dd9144ef586f33aae4b35659c1bb8c11395fe139504f98542daf45",
+    "mode": "file",
+    "target_path": "plugin/soft-guest-cap-calculator.js"
+  },
+  "targets": [
+    "plugin/soft-guest-cap-calculator.js"
+  ]
+}

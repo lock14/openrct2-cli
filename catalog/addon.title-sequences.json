@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "kind": "addon",
+  "id": "title-sequences",
+  "display_name": "Official Title Sequences",
+  "addon_type": "assetpack",
+  "category": "Presentation",
+  "author": "OpenRCT2 Team",
+  "version": "v0.5.6",
+  "description": "Official OpenRCT2, RCT1, Corkscrew Follies, Loopy Landscapes, and RCT2 title sequences",
+  "aliases": [
+    "titles",
+    "sequences"
+  ],
+  "homepage": "https://github.com/OpenRCT2/title-sequences",
+  "source": {
+    "repo": "OpenRCT2/title-sequences",
+    "url": "https://github.com/OpenRCT2/title-sequences/releases/download/v0.5.6/title-sequences.zip",
+    "sha256": "37ac28985baf183bae27af72710613595f683dc24892c05989fb6bfd016bdb5d",
+    "mode": "zip",
+    "target_dir": "sequence"
+  },
+  "targets": [
+    "sequence/openrct2.parkseq",
+    "sequence/rct1.parkseq",
+    "sequence/rct1aa.parkseq",
+    "sequence/rct1aall.parkseq",
+    "sequence/rct2.parkseq"
+  ]
+}

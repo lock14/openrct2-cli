@@ -1,0 +1,46 @@
+# openrct2-cli (`rct`)
+
+> A unified, cross-platform Go CLI and curated configuration, engine, asset-pack, and JavaScript plugin manager for
+> OpenRCT2 across Linux, macOS, and Windows.
+
+## Overview
+
+`openrct2-cli` compiles to a single static binary named `rct` (avoiding PATH collisions with upstream's `openrct2` GUI
+binary and `openrct2-cli` headless server binary). It embeds curated WASD keybindings, display-aware `config.ini`
+templates, FreeDesktop launcher assets, release channel definitions (`release` and `develop`), official OpenRCT2 audio
+and music packs, and top community JavaScript plugins via `embed.go` (`openrct2cli.FS`).
+
+## Core capabilities
+
+* `rct [file|uri] [flags]`: Launches OpenRCT2 directly (supports `--dry-run`, `--headless`, and passthrough engine
+  arguments).
+* `rct setup [--force] [--channel release|develop] [--skip-addons]`: 5-step turnkey setup:
+  1. Scans Steam (`libraryfolders.vdf`), GOG, Wine, and local directories for *RollerCoaster Tycoon 2* / *RCT Classic*
+     (`Data/g1.dat` or `Assets/g1.dat`) and *RollerCoaster Tycoon Deluxe* (`Data/csg1.dat`).
+  2. Deploys `config.ini` (auto-detecting monitor resolution and HiDPI `window_scale`), WASD `shortcuts.json`, and Linux
+     FreeDesktop `.desktop` + `hicolor` icons with change-detected `.bak.<timestamp>` backups.
+  3. Installs portable OpenRCT2 in user-space (`OpenRCT2/OpenRCT2` for `release`, `OpenRCT2/OpenRCT2-binaries` for
+     `develop`) with SHA-256 verification and `os.OpenRoot`-jailed bundle extraction.
+  4. Installs SHA-256-verified official OpenRCT2 asset packs (`openmusic`, `opensound`, `title-sequences`).
+  5. Installs SHA-256-verified community JavaScript plugins (`ride-vehicle-editor`, `park-rating-inspector`,
+     `scenery-manager`, `benchwarmer`, `ride-price-manager`, `soft-guest-cap-calculator`, `advanced-track`,
+     `peep-editor`).
+* `rct engine [status|install|update|channel]`: Inspects engine readiness and receipts, installs or updates portable
+  builds idempotently, and switches between `release` and `develop` channels.
+* `rct games [status|scan|set]`: Validates `game_path` and `rct1_path`, auto-discovers Steam and GOG libraries, or sets
+  verified game directories manually.
+* `rct addons` (alias `rct plugins`) `[list|show|install|remove|add|lint]`: Manages curated and user `catalog.d/*.json`
+  asset packs and JavaScript plugins.
+* `rct config [show|get|set|install|diff|sync|uninstall]`: Manages persistent CLI settings (`config.json`) and deploys,
+  diffs, reverse-syncs, or cleanly uninstalls OpenRCT2 configurations without touching user saves or scenarios.
+
+## Key repository files
+
+* [README.md](README.md): User-facing quick start, CLI command reference, WASD shortcuts cheat sheet, curated add-ons
+  catalog, directory layouts, and extensibility guide.
+* [CONTRIBUTING.md](CONTRIBUTING.md): Developer build workflow, architecture table, catalog schema, and coding rules.
+* [AGENTS.md](AGENTS.md): Architectural invariants, placeholder token rules, backup/security policies, and verification
+  checklist.
+* [SECURITY.md](SECURITY.md): Vulnerability reporting policy.
+* [embed.go](embed.go): Root `embed.FS` declaration.
+* [Makefile](Makefile): Build, install, lint, race-test, benchmark, and path-audit targets.

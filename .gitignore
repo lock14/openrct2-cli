@@ -1,18 +1,54 @@
-# OpenRCT2 Cache and Index files
-*.idx
+# Binaries and build artifacts
+bin/
+dist/
+/rct
+/rct.exe
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
 
-# Timestamped Backups
+# Test binaries and coverage artifacts
+*.test
+*.out
+coverage.txt
+coverage.html
+coverage/
+cov/
+c.out
+cov.out
+
+# Performance profiling artifacts
+*.pprof
+*.prof
+cpu.out
+mem.out
+bench.txt
+bench-old.txt
+bench-new.txt
+
+# Backup files
+*.bak
 *.bak.*
 
-# Temporary / OS files
-*.tmp
-*.log
+# IDEs and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Operating System files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
 
-# User data directories (not tracked in config repo)
-save/
-crash/
-desyncs/
-replay/
-screenshot/
+# Local environment & tools
+.env
+.env.local
+.mise.local.toml

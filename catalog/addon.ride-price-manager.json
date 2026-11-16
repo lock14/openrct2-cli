@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "kind": "addon",
+  "id": "ride-price-manager",
+  "display_name": "Ride Price Manager",
+  "addon_type": "plugin",
+  "category": "Park Management",
+  "author": "mgovea",
+  "version": "v1.3.2",
+  "description": "Automatically calculate and maintain optimal ticket prices as rides age",
+  "aliases": [
+    "rpm",
+    "price-manager"
+  ],
+  "homepage": "https://github.com/mgovea/openrct2-ride-price-manager",
+  "source": {
+    "repo": "mgovea/openrct2-ride-price-manager",
+    "url": "https://github.com/mgovea/openrct2-ride-price-manager/releases/download/v1.3.2/Ride.Price.Manager.js",
+    "sha256": "ca1b96f82741866142720910f388104cd93ba9480a0dffb937bb3bebe2580406",
+    "mode": "file",
+    "target_path": "plugin/Ride.Price.Manager.js"
+  },
+  "targets": [
+    "plugin/Ride.Price.Manager.js"
+  ]
+}

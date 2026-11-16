@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "kind": "addon",
+  "id": "park-rating-inspector",
+  "display_name": "Park Rating Inspector",
+  "addon_type": "plugin",
+  "category": "Park Management",
+  "author": "Basssiiie",
+  "version": "v0.3",
+  "description": "Inspect the exact bonuses and penalties contributing to your current park rating",
+  "aliases": [
+    "pri",
+    "rating-inspector"
+  ],
+  "homepage": "https://github.com/Basssiiie/OpenRCT2-ParkRatingInspector",
+  "source": {
+    "repo": "Basssiiie/OpenRCT2-ParkRatingInspector",
+    "url": "https://github.com/Basssiiie/OpenRCT2-ParkRatingInspector/releases/download/v0.3/ParkRatingInspector-v0.3.zip",
+    "sha256": "1561b4763889e5d7dde68ae32725fc8fffa11b49fc7e116eece74189bec0ec77",
+    "mode": "zip",
+    "target_dir": "plugin"
+  },
+  "targets": [
+    "plugin/ParkRatingInspector.js"
+  ]
+}

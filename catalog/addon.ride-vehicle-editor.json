@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "kind": "addon",
+  "id": "ride-vehicle-editor",
+  "display_name": "Ride Vehicle Editor",
+  "addon_type": "plugin",
+  "category": "Rides & Track",
+  "author": "Basssiiie",
+  "version": "v2.2",
+  "description": "Edit ride vehicles, capacities, masses, spacing, and ratings live in-game",
+  "aliases": [
+    "rve",
+    "vehicle-editor"
+  ],
+  "homepage": "https://github.com/Basssiiie/OpenRCT2-RideVehicleEditor",
+  "source": {
+    "repo": "Basssiiie/OpenRCT2-RideVehicleEditor",
+    "url": "https://github.com/Basssiiie/OpenRCT2-RideVehicleEditor/releases/download/v2.2/RideVehicleEditor-v2.2.zip",
+    "sha256": "a5c604afe09a9b070b8c42425ce4fd40e0da8475041717a9a8d0d70bff2220ec",
+    "mode": "zip",
+    "target_dir": "plugin"
+  },
+  "targets": [
+    "plugin/RideVehicleEditor.js"
+  ]
+}

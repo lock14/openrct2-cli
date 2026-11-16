@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "kind": "addon",
+  "id": "openmusic",
+  "display_name": "OpenMusic",
+  "addon_type": "assetpack",
+  "category": "Audio & Music",
+  "author": "OpenRCT2 Team",
+  "version": "v1.6.1",
+  "description": "Official OpenRCT2 bonus ride music styles and copyright-safe soundtrack packs",
+  "aliases": [
+    "music",
+    "openrct2-music"
+  ],
+  "homepage": "https://github.com/OpenRCT2/OpenMusic",
+  "source": {
+    "repo": "OpenRCT2/OpenMusic",
+    "url": "https://github.com/OpenRCT2/OpenMusic/releases/download/v1.6.1/openmusic.zip",
+    "sha256": "994b350d3b180ee1cb9619fe27f7ebae3a1a5232840c4bd47a89f33fa89de1a1",
+    "mode": "zip",
+    "target_dir": "."
+  },
+  "targets": [
+    "assetpack/openrct2.music.alternative.parkap",
+    "assetpack/openrct2.music.cover.parkap"
+  ]
+}
