@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "kind": "addon",
+  "id": "benchwarmer",
+  "display_name": "Benchwarmer",
+  "addon_type": "plugin",
+  "category": "Footpaths & Guests",
+  "author": "tubbo",
+  "version": "v1.2.0",
+  "description": "Automatically populate footpaths with benches, bins, lamps, and queue TVs",
+  "aliases": [
+    "benches"
+  ],
+  "homepage": "https://github.com/tubbo/openrct2-benchwarmer",
+  "source": {
+    "repo": "tubbo/openrct2-benchwarmer",
+    "url": "https://github.com/tubbo/openrct2-benchwarmer/releases/download/v1.2.0/benchwarmer.js",
+    "sha256": "8d2ffac0a2657ed1f16efb5bbd655293442795eb1e615ed6f095e6c8fb89fd74",
+    "mode": "file",
+    "target_path": "plugin/benchwarmer.js"
+  },
+  "targets": [
+    "plugin/benchwarmer.js"
+  ]
+}

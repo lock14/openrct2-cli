@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "kind": "channel",
+  "id": "develop",
+  "display_name": "OpenRCT2 Develop Channel",
+  "description": "Continuous development builds from OpenRCT2/OpenRCT2-binaries",
+  "aliases": [
+    "dev",
+    "nightly"
+  ],
+  "repo": "OpenRCT2/OpenRCT2-binaries",
+  "platforms": {
+    "linux/amd64": {
+      "assets": [
+        "^OpenRCT2-.*-linux-x86_64\\.AppImage$"
+      ],
+      "pinned": {
+        "version": "v0.5.7-40-g64c3fef27b",
+        "url": "https://github.com/OpenRCT2/OpenRCT2-binaries/releases/download/v0.5.7-40-g64c3fef27b/OpenRCT2-v0.5.7-40-g64c3fef27b-linux-x86_64.AppImage",
+        "sha256": "a63b7a59b0c602d12e6739b4d7fcda5f3e7f23e3f972979cdb347ee790fd60dd"
+      }
+    },
+    "darwin/arm64": {
+      "assets": [
+        "^OpenRCT2-.*-macos-universal\\.zip$"
+      ],
+      "pinned": {
+        "version": "v0.5.7-40-g64c3fef27b",
+        "url": "https://github.com/OpenRCT2/OpenRCT2-binaries/releases/download/v0.5.7-40-g64c3fef27b/OpenRCT2-v0.5.7-40-g64c3fef27b-macos-universal.zip",
+        "sha256": "bca95425e1950f30b5b5467a38cee964d11a1b9aa7ff9d161c88831f4578bab5"
+      }
+    },
+    "darwin/amd64": {
+      "assets": [
+        "^OpenRCT2-.*-macos-universal\\.zip$"
+      ],
+      "pinned": {
+        "version": "v0.5.7-40-g64c3fef27b",
+        "url": "https://github.com/OpenRCT2/OpenRCT2-binaries/releases/download/v0.5.7-40-g64c3fef27b/OpenRCT2-v0.5.7-40-g64c3fef27b-macos-universal.zip",
+        "sha256": "bca95425e1950f30b5b5467a38cee964d11a1b9aa7ff9d161c88831f4578bab5"
+      }
+    },
+    "windows/amd64": {
+      "assets": [
+        "^OpenRCT2-.*-windows-portable-x64\\.zip$"
+      ],
+      "pinned": {
+        "version": "v0.5.7-40-g64c3fef27b",
+        "url": "https://github.com/OpenRCT2/OpenRCT2-binaries/releases/download/v0.5.7-40-g64c3fef27b/OpenRCT2-v0.5.7-40-g64c3fef27b-windows-portable-x64.zip",
+        "sha256": "870d7cff6a9664d68a9923f44e75a618bcc87a8799e361c5ae0456708de2865a"
+      }
+    },
+    "windows/arm64": {
+      "assets": [
+        "^OpenRCT2-.*-windows-portable-arm64\\.zip$"
+      ],
+      "pinned": {
+        "version": "v0.5.7-40-g64c3fef27b",
+        "url": "https://github.com/OpenRCT2/OpenRCT2-binaries/releases/download/v0.5.7-40-g64c3fef27b/OpenRCT2-v0.5.7-40-g64c3fef27b-windows-portable-arm64.zip",
+        "sha256": "6e2f04cae55e260f9e76221cfbe3ff83e91fb7dd4af03b53de77aa540b3f39b0"
+      }
+    }
+  }
+}

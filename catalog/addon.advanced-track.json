@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "kind": "addon",
+  "id": "advanced-track",
+  "display_name": "Advanced Track",
+  "addon_type": "plugin",
+  "category": "Rides & Track",
+  "author": "oli414",
+  "version": "1.3.6",
+  "description": "Transform, curve, bank, and fine-tune custom coaster track segments freely",
+  "aliases": [
+    "at",
+    "track"
+  ],
+  "homepage": "https://github.com/oli414/AdvancedTrack",
+  "source": {
+    "repo": "oli414/AdvancedTrack",
+    "url": "https://github.com/oli414/AdvancedTrack/releases/download/1.3.6/AdvancedTrack.js",
+    "sha256": "2dcab11d7890ea5c9f2cb4fcae02c71760af5c7a9e7680e115655a7ecb0866b0",
+    "mode": "file",
+    "target_path": "plugin/AdvancedTrack.js"
+  },
+  "targets": [
+    "plugin/AdvancedTrack.js"
+  ]
+}

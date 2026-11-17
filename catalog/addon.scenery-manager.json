@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "kind": "addon",
+  "id": "scenery-manager",
+  "display_name": "Scenery Manager",
+  "addon_type": "plugin",
+  "category": "Scenery & Building",
+  "author": "Sadret",
+  "version": "v2.0.9",
+  "description": "Copy, paste, scatter, replace, and organize custom scenery across parks",
+  "aliases": [
+    "sm",
+    "scenery"
+  ],
+  "homepage": "https://github.com/Sadret/openrct2-scenery-manager",
+  "source": {
+    "repo": "Sadret/openrct2-scenery-manager",
+    "url": "https://github.com/Sadret/openrct2-scenery-manager/releases/download/v2.0.9/openrct2-scenery-manager-2.0.9.js",
+    "sha256": "6857e7a7939505ff0f9b63c7ec1252d0e6bf2e56d0fef0c0c7770c364b37be5f",
+    "mode": "file",
+    "target_path": "plugin/openrct2-scenery-manager.js"
+  },
+  "targets": [
+    "plugin/openrct2-scenery-manager.js"
+  ]
+}

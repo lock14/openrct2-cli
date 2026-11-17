@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "kind": "addon",
+  "id": "peep-editor",
+  "display_name": "Peep Editor",
+  "addon_type": "plugin",
+  "category": "Footpaths & Guests",
+  "author": "Manticore-007",
+  "version": "v26.9.18",
+  "description": "Inspect and customize guest and staff stats, inventory, clothing, and behavior",
+  "aliases": [
+    "peep",
+    "guests-editor"
+  ],
+  "homepage": "https://github.com/Manticore-007/OpenRCT2-PeepEditor",
+  "source": {
+    "repo": "Manticore-007/OpenRCT2-PeepEditor",
+    "url": "https://github.com/Manticore-007/OpenRCT2-PeepEditor/releases/download/v26.9.18/PeepEditor.js",
+    "sha256": "2ea8dab2f506127d4568c24bde5698a2e638e7052882bc5b9d60ba988dce26f0",
+    "mode": "file",
+    "target_path": "plugin/PeepEditor.js"
+  },
+  "targets": [
+    "plugin/PeepEditor.js"
+  ]
+}

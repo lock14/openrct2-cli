@@ -1,0 +1,173 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  format-and-tidy:
+    name: Format and Module Hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: 'stable'
+
+      - name: Verify dependencies
+        run: |
+          go mod verify
+          go mod download
+
+      - name: Check formatting
+        run: |
+          if [ -n "$(gofmt -s -l .)" ]; then
+            echo "The following files are not formatted properly:"
+            gofmt -s -l .
+            echo "Please run 'gofmt -s -w .' locally and commit the changes."
+            exit 1
+          fi
+
+      - name: Check go mod tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+  lint:
+    name: Lint and Static Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: 'stable'
+
+      - name: Install desktop-file-utils
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y desktop-file-utils
+
+      - name: Validate FreeDesktop entry
+        run: desktop-file-validate configs/desktop/OpenRCT2.desktop
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Install and run revive
+        run: |
+          go install github.com/mgechev/revive@latest
+          revive -config revive.toml -formatter friendly -set_exit_status ./...
+
+  govulncheck:
+    name: Vulnerability Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: 'stable'
+
+      - name: Run govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version: 'stable'
+
+  test:
+    name: Test and Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: 'stable'
+
+      - name: Run tests (Linux with race detector and coverage)
+        if: runner.os == 'Linux'
+        run: go test -v -race -shuffle=on -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Upload coverage to Codecov
+        if: runner.os == 'Linux'
+        uses: codecov/codecov-action@v7
+        with:
+          files: ./coverage.out
+          fail_ci_if_error: false
+
+      - name: Run tests (macOS with race detector)
+        if: runner.os == 'macOS'
+        run: go test -v -race -shuffle=on ./...
+
+      - name: Run tests (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: go test -v -shuffle=on ./...
+
+      - name: Build binary
+        shell: bash
+        run: |
+          mkdir -p bin
+          go build -o bin/rct ./cmd/rct
+
+      - name: Verify CLI commands
+        shell: bash
+        run: |
+          ./bin/rct --version
+          ./bin/rct --help
+          ./bin/rct engine status
+          ./bin/rct games status
+          ./bin/rct addons list
+          ./bin/rct addons lint
+          ./bin/rct config show
+          ./bin/rct setup --help
+
+  ci-gatekeeper:
+    name: CI Gatekeeper
+    runs-on: ubuntu-latest
+    needs:
+      - format-and-tidy
+      - lint
+      - govulncheck
+      - test
+    if: always()
+    steps:
+      - name: Evaluate upstream job statuses
+        run: |
+          echo "Evaluating CI pipeline job results:"
+          echo "Format and Tidy: ${{ needs.format-and-tidy.result }}"
+          echo "Lint:          ${{ needs.lint.result }}"
+          echo "Govulncheck:   ${{ needs.govulncheck.result }}"
+          echo "Test Matrix:   ${{ needs.test.result }}"
+
+          if [ "${{ needs.format-and-tidy.result }}" != "success" ] || \
+             [ "${{ needs.lint.result }}" != "success" ] || \
+             [ "${{ needs.govulncheck.result }}" != "success" ] || \
+             [ "${{ needs.test.result }}" != "success" ]; then
+            echo "CI Gatekeeper failed: One or more upstream checks did not succeed."
+            exit 1
+          fi
+
+          echo "All required CI checks passed."
