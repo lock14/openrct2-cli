@@ -1,12 +1,13 @@
 package catalog
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"maps"
 	"os"
 	"path"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -15,25 +16,53 @@ import (
 
 // NormalizeQuery strips punctuation/whitespace and lowercases s for tolerant lookup.
 func NormalizeQuery(s string) string {
+	if s == "" {
+		return ""
+	}
 	var b strings.Builder
-	for _, r := range strings.ToLower(strings.TrimSpace(s)) {
+	b.Grow(len(s))
+	for _, r := range s {
 		if unicode.IsLetter(r) || unicode.IsNumber(r) {
-			b.WriteRune(r)
+			b.WriteRune(unicode.ToLower(r))
 		}
 	}
 	return b.String()
 }
 
 func acronymOf(displayName string) string {
+	if displayName == "" {
+		return ""
+	}
 	var b strings.Builder
-	for _, word := range strings.FieldsFunc(displayName, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
-	}) {
-		if word != "" {
-			b.WriteRune(unicode.ToLower([]rune(word)[0]))
+	b.Grow(8)
+	inWord := false
+	for _, r := range displayName {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			if !inWord {
+				b.WriteRune(unicode.ToLower(r))
+				inWord = true
+			}
+		} else {
+			inWord = false
 		}
 	}
 	return b.String()
+}
+
+func cloneChannel(ch ChannelConfig) *ChannelConfig {
+	out := ch
+	out.Aliases = slices.Clone(ch.Aliases)
+	if ch.Platforms != nil {
+		out.Platforms = maps.Clone(ch.Platforms)
+	}
+	return &out
+}
+
+func cloneAddon(ad Addon) *Addon {
+	out := ad
+	out.Aliases = slices.Clone(ad.Aliases)
+	out.Targets = slices.Clone(ad.Targets)
+	return &out
 }
 
 // FindChannel resolves a channel by ID or alias (such as "release", "stable", "develop", "dev").
@@ -46,13 +75,13 @@ func (c *Catalog) FindChannel(query string) *ChannelConfig {
 		q = "release"
 	}
 	if ch, ok := c.Channels[q]; ok {
-		return &ch
+		return cloneChannel(ch)
 	}
-	for _, ch := range c.Channels {
+	for _, id := range slices.Sorted(maps.Keys(c.Channels)) {
+		ch := c.Channels[id]
 		for _, alias := range ch.Aliases {
 			if strings.EqualFold(alias, q) {
-				copyCh := ch
-				return &copyCh
+				return cloneChannel(ch)
 			}
 		}
 	}
@@ -74,7 +103,7 @@ func (c *Catalog) FindAddon(query string) *Addon {
 	// Tier 1: Exact ID
 	for i := range c.Addons {
 		if strings.EqualFold(c.Addons[i].ID, trimmed) {
-			return &c.Addons[i]
+			return cloneAddon(c.Addons[i])
 		}
 	}
 
@@ -82,7 +111,7 @@ func (c *Catalog) FindAddon(query string) *Addon {
 	for i := range c.Addons {
 		for _, alias := range c.Addons[i].Aliases {
 			if strings.EqualFold(alias, trimmed) || (norm != "" && NormalizeQuery(alias) == norm) {
-				return &c.Addons[i]
+				return cloneAddon(c.Addons[i])
 			}
 		}
 	}
@@ -90,18 +119,19 @@ func (c *Catalog) FindAddon(query string) *Addon {
 	// Tier 3: Normalized ID or DisplayName
 	for i := range c.Addons {
 		if norm != "" && (NormalizeQuery(c.Addons[i].ID) == norm || NormalizeQuery(c.Addons[i].DisplayName) == norm) {
-			return &c.Addons[i]
+			return cloneAddon(c.Addons[i])
 		}
 	}
 
 	// Tier 4: Target filename or stem
-	stemQuery := NormalizeQuery(strings.TrimSuffix(strings.ToLower(trimmed), ".js"))
+	stemLower, _ := strings.CutSuffix(strings.ToLower(trimmed), ".js")
+	stemQuery := NormalizeQuery(stemLower)
 	for i := range c.Addons {
 		for _, target := range c.Addons[i].Targets {
 			base := path.Base(target)
 			stem := strings.TrimSuffix(base, path.Ext(base))
 			if strings.EqualFold(base, trimmed) || (stemQuery != "" && NormalizeQuery(stem) == stemQuery) {
-				return &c.Addons[i]
+				return cloneAddon(c.Addons[i])
 			}
 		}
 	}
@@ -110,7 +140,7 @@ func (c *Catalog) FindAddon(query string) *Addon {
 	if len(norm) >= 2 {
 		for i := range c.Addons {
 			if acronymOf(c.Addons[i].DisplayName) == norm {
-				return &c.Addons[i]
+				return cloneAddon(c.Addons[i])
 			}
 		}
 	}
@@ -126,65 +156,15 @@ func SaveUserAddon(catalogDir string, addon Addon) (string, error) {
 	addon.SchemaVersion = SchemaVersion
 	addon.Kind = KindAddon
 	addon.ID = strings.ToLower(strings.TrimSpace(addon.ID))
-	if !IsValidID(addon.ID) {
-		return "", fmt.Errorf("invalid addon id %q (use lowercase letters, digits, and hyphens)", addon.ID)
-	}
-	if addon.AddonType != AddonTypePlugin && addon.AddonType != AddonTypeAssetPack {
-		return "", fmt.Errorf(
-			"invalid addon type %q (expected %q or %q)",
-			addon.AddonType, AddonTypePlugin, AddonTypeAssetPack,
-		)
-	}
-	if addon.Source.Mode != InstallModeFile && addon.Source.Mode != InstallModeZip {
-		return "", fmt.Errorf(
-			"invalid install mode %q (expected %q or %q)",
-			addon.Source.Mode, InstallModeFile, InstallModeZip,
-		)
-	}
-	if !strings.HasPrefix(addon.Source.URL, "https://") && !strings.HasPrefix(addon.Source.URL, "http://") {
-		return "", fmt.Errorf("source URL %q must use https:// or http://", addon.Source.URL)
-	}
-	if addon.Source.Mode == InstallModeFile {
-		cleanRel, err := fsutil.CleanRel(addon.Source.TargetPath)
-		if err != nil {
-			return "", fmt.Errorf("invalid target_path: %w", err)
-		}
-		addon.Source.TargetPath = cleanRel
-		if len(addon.Targets) == 0 {
-			addon.Targets = []string{cleanRel}
-		}
-	} else if addon.Source.TargetDir != "" && addon.Source.TargetDir != "." {
-		cleanDir, err := fsutil.CleanRel(addon.Source.TargetDir)
-		if err != nil {
-			return "", fmt.Errorf("invalid target_dir: %w", err)
-		}
-		addon.Source.TargetDir = cleanDir
-	}
-	if len(addon.Targets) == 0 {
-		return "", errors.New("at least one target path is required")
-	}
-	for i, t := range addon.Targets {
-		cleanT, err := fsutil.CleanRel(t)
-		if err != nil {
-			return "", fmt.Errorf("invalid target %q: %w", t, err)
-		}
-		addon.Targets[i] = cleanT
+	if err := ValidateAddon(&addon); err != nil {
+		return "", err
 	}
 
 	destPath, err := fsutil.SafeJoin(catalogDir, fmt.Sprintf("addon.%s.json", addon.ID))
 	if err != nil {
 		return "", err
 	}
-
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(addon); err != nil {
-		return "", err
-	}
-
-	if _, _, err := fsutil.WriteFileAtomicIfChanged(destPath, buf.Bytes(), 0o644); err != nil {
+	if _, _, err := fsutil.WriteJSONAtomicIfChanged(destPath, addon, 0o644); err != nil {
 		return "", err
 	}
 	return destPath, nil
@@ -201,7 +181,7 @@ func RemoveUserAddon(catalogDir, id string) (bool, error) {
 		return false, err
 	}
 	if err := os.Remove(target); err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return false, nil
 		}
 		return false, err

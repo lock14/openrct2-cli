@@ -37,6 +37,30 @@ func newAddonsCmd() *cobra.Command {
 	return addonsCmd
 }
 
+func normalizeAddonTypeFilter(raw string) (string, error) {
+	ft := strings.ToLower(strings.TrimSpace(raw))
+	if ft != "" && ft != catalog.AddonTypePlugin && ft != catalog.AddonTypeAssetPack {
+		return "", fmt.Errorf(
+			"invalid --type %q (expected %q or %q)",
+			raw, catalog.AddonTypePlugin, catalog.AddonTypeAssetPack,
+		)
+	}
+	return ft, nil
+}
+
+func filterCatalogAddons(addons []catalog.Addon, filterType string) []catalog.Addon {
+	if filterType == "" {
+		return addons
+	}
+	filtered := make([]catalog.Addon, 0, len(addons))
+	for _, ad := range addons {
+		if ad.AddonType == filterType {
+			filtered = append(filtered, ad)
+		}
+	}
+	return filtered
+}
+
 func newAddonsListCmd() *cobra.Command {
 	var filterType string
 	listCmd := &cobra.Command{
@@ -48,10 +72,15 @@ func newAddonsListCmd() *cobra.Command {
 		},
 	}
 	listCmd.Flags().StringVar(&filterType, "type", "", "Filter by type (plugin or assetpack)")
+	registerAddonTypeFlagCompletion(listCmd, "type")
 	return listCmd
 }
 
 func runAddonsList(cmd *cobra.Command, filterType string) error {
+	ft, err := normalizeAddonTypeFilter(filterType)
+	if err != nil {
+		return err
+	}
 	out := cmdOut(cmd)
 	errOut := cmdErr(cmd)
 	paths, _, cat, err := loadAppState(errOut)
@@ -59,18 +88,7 @@ func runAddonsList(cmd *cobra.Command, filterType string) error {
 		return err
 	}
 
-	ft := strings.ToLower(strings.TrimSpace(filterType))
-	if ft != "" && ft != catalog.AddonTypePlugin && ft != catalog.AddonTypeAssetPack {
-		return fmt.Errorf(
-			"invalid --type %q (expected %q or %q)",
-			filterType, catalog.AddonTypePlugin, catalog.AddonTypeAssetPack,
-		)
-	}
-
-	for _, ad := range cat.Addons {
-		if ft != "" && ad.AddonType != ft {
-			continue
-		}
+	for _, ad := range filterCatalogAddons(cat.Addons, ft) {
 		badge := "[✗ Missing]  "
 		if content.IsInstalled(paths.OpenRCT2Dir, ad) {
 			badge = "[✓ Installed]"
@@ -90,9 +108,10 @@ func runAddonsList(cmd *cobra.Command, filterType string) error {
 
 func newAddonsShowCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "show <id>",
-		Short: "Display metadata, source URL, SHA-256 checksum, and target files for an add-on",
-		Args:  cobra.ExactArgs(1),
+		Use:               "show <id>",
+		Short:             "Display metadata, source URL, SHA-256 checksum, and target files for an add-on",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeAddonIDs(false),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cmdOut(cmd)
 			errOut := cmdErr(cmd)
@@ -146,11 +165,16 @@ func newAddonsInstallCmd() *cobra.Command {
 		filterType string
 	)
 	installCmd := &cobra.Command{
-		Use:     "install [id|all]",
-		Aliases: []string{"fetch"},
-		Short:   "Download, verify, and install one or all OpenRCT2 asset packs and JS plugins",
-		Args:    cobra.MaximumNArgs(1),
+		Use:               "install [id|all]",
+		Aliases:           []string{"fetch"},
+		Short:             "Download, verify, and install one or all OpenRCT2 asset packs and JS plugins",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeAddonIDs(true),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ft, err := normalizeAddonTypeFilter(filterType)
+			if err != nil {
+				return err
+			}
 			out := cmdOut(cmd)
 			errOut := cmdErr(cmd)
 			paths, _, cat, err := loadAppState(errOut)
@@ -160,15 +184,7 @@ func newAddonsInstallCmd() *cobra.Command {
 
 			ins := content.NewInstaller(paths, force, out)
 			if len(args) == 0 || strings.EqualFold(args[0], "all") {
-				ft := strings.ToLower(strings.TrimSpace(filterType))
-				var targets []catalog.Addon
-				for _, ad := range cat.Addons {
-					if ft != "" && ad.AddonType != ft {
-						continue
-					}
-					targets = append(targets, ad)
-				}
-				return ins.InstallAll(cmd.Context(), targets)
+				return ins.InstallAll(cmd.Context(), filterCatalogAddons(cat.Addons, ft))
 			}
 
 			ad := cat.FindAddon(args[0])
@@ -180,16 +196,18 @@ func newAddonsInstallCmd() *cobra.Command {
 	}
 	installCmd.Flags().BoolVar(&force, "force", false, "Re-download and overwrite existing add-on files")
 	installCmd.Flags().StringVar(&filterType, "type", "", "Filter when installing all (plugin or assetpack)")
+	registerAddonTypeFlagCompletion(installCmd, "type")
 	return installCmd
 }
 
 func newAddonsRemoveCmd() *cobra.Command {
 	var purgeCatalog bool
 	rmCmd := &cobra.Command{
-		Use:     "remove <id>",
-		Aliases: []string{"uninstall", "rm"},
-		Short:   "Remove an installed add-on from OpenRCT2 (and optionally delete custom catalog entry)",
-		Args:    cobra.ExactArgs(1),
+		Use:               "remove <id>",
+		Aliases:           []string{"uninstall", "rm"},
+		Short:             "Remove an installed add-on from OpenRCT2 (and optionally delete custom catalog entry)",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeAddonIDs(false),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cmdOut(cmd)
 			errOut := cmdErr(cmd)
@@ -260,14 +278,22 @@ func newAddonsAddCmd() *cobra.Command {
 			}
 			effMode := strings.ToLower(strings.TrimSpace(mode))
 			if effMode == "" {
-				if strings.HasSuffix(strings.ToLower(url), ".zip") {
+				cleanURL := strings.ToLower(url)
+				if qIdx := strings.IndexAny(cleanURL, "?#"); qIdx >= 0 {
+					cleanURL = cleanURL[:qIdx]
+				}
+				if strings.HasSuffix(cleanURL, ".zip") {
 					effMode = catalog.InstallModeZip
 				} else {
 					effMode = catalog.InstallModeFile
 				}
 			}
 			if effMode == catalog.InstallModeFile && strings.TrimSpace(targetPath) == "" {
-				base := path.Base(url)
+				cleanURL := url
+				if qIdx := strings.IndexAny(cleanURL, "?#"); qIdx >= 0 {
+					cleanURL = cleanURL[:qIdx]
+				}
+				base := path.Base(cleanURL)
 				if base == "" || base == "." || base == "/" {
 					base = id + ".js"
 				}
@@ -321,6 +347,7 @@ func newAddonsAddCmd() *cobra.Command {
 	addCmd.Flags().StringVar(&sha256Hex, "sha256", "", "Optional 64-character SHA-256 hex digest")
 	addCmd.Flags().StringVar(&versionStr, "version-tag", "", "Version label (e.g. v1.0.0)")
 	addCmd.Flags().StringVar(&description, "description", "", "Short description of the add-on")
+	registerAddonTypeFlagCompletion(addCmd, "type")
 
 	return addCmd
 }
@@ -343,14 +370,16 @@ func newAddonsLintCmd() *cobra.Command {
 			if len(args) == 1 {
 				rootDir = args[0]
 			}
-			if _, err := filepath.Abs(rootDir); err == nil {
-				issues := repolint.LintRepo(rootDir)
-				if len(issues) > 0 {
-					for _, iss := range issues {
-						fmt.Fprintf(errOut, "lint error: %s\n", iss.String())
-					}
-					return fmt.Errorf("found %d repository lint issue(s)", len(issues))
+			absRoot, err := filepath.Abs(rootDir)
+			if err != nil {
+				return fmt.Errorf("resolving repository root %q: %w", rootDir, err)
+			}
+			issues := repolint.LintRepo(absRoot)
+			if len(issues) > 0 {
+				for _, iss := range issues {
+					fmt.Fprintf(errOut, "lint error: %s\n", iss.String())
 				}
+				return fmt.Errorf("found %d repository lint issue(s)", len(issues))
 			}
 
 			fmt.Fprintln(out, "✓ All catalog entities, templates, and documentation passed validation!")

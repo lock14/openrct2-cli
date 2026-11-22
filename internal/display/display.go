@@ -15,7 +15,12 @@ import (
 	"time"
 )
 
-const probeTimeout = 1500 * time.Millisecond
+const (
+	probeTimeout   = 1500 * time.Millisecond
+	defaultWidth   = 1920
+	defaultHeight  = 1080
+	defaultDRMGlob = "/sys/class/drm/*/modes"
+)
 
 var (
 	reResFormat     = regexp.MustCompile(`^(\d+)x(\d+)$`)
@@ -24,6 +29,15 @@ var (
 	reWlrRes        = regexp.MustCompile(`(\d+x\d+)\s+px,\s+\d+(?:\.\d+)?\s+Hz\s+\([^)\r\n]*\bcurrent\b[^)\r\n]*\)`)
 	reWinController = regexp.MustCompile(`^(\d+)x(\d+)(?:@\d+)?$`)
 )
+
+const windowsResolutionScript = "Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | " +
+	"ForEach-Object { \"$($_.CurrentHorizontalResolution)x$($_.CurrentVerticalResolution)\" }; " +
+	"Add-Type -TypeDefinition 'using System.Runtime.InteropServices; " +
+	"public class Dpi { [DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware(); }'; " +
+	"[void][Dpi]::SetProcessDPIAware(); " +
+	"Add-Type -AssemblyName System.Windows.Forms; " +
+	"[System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width.ToString() + 'x' + " +
+	"[System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height.ToString()"
 
 // Info describes detected display geometry and recommended OpenRCT2 window settings.
 type Info struct {
@@ -43,6 +57,18 @@ func (d Info) ScaleString() string {
 	return fmt.Sprintf("%.6f", scale)
 }
 
+type prober struct {
+	run     func(name string, args ...string) ([]byte, error)
+	drmGlob string
+}
+
+func defaultProber() prober {
+	return prober{
+		run:     runProbe,
+		drmGlob: defaultDRMGlob,
+	}
+}
+
 func runProbe(name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
@@ -51,15 +77,15 @@ func runProbe(name string, args ...string) ([]byte, error) {
 
 // Detect queries the current OS display server and returns recommended OpenRCT2 display geometry.
 func Detect() Info {
-	w, h := detectResolutionOS(runtime.GOOS)
+	w, h := defaultProber().detectResolutionOS(runtime.GOOS)
 	return BuildInfo(w, h)
 }
 
 // BuildInfo computes full OpenRCT2 display and window parameters from a monitor resolution.
 func BuildInfo(width, height int) Info {
 	if width <= 0 || height <= 0 {
-		width = 1920
-		height = 1080
+		width = defaultWidth
+		height = defaultHeight
 	}
 	winW, winH := WindowDimensions(width, height)
 	return Info{
@@ -86,10 +112,10 @@ func RecommendedWindowScale(width, height int) float64 {
 // WindowDimensions computes non-fullscreen window dimensions leaving room for OS panels/taskbars.
 func WindowDimensions(width, height int) (int, int) {
 	if width <= 0 {
-		width = 1920
+		width = defaultWidth
 	}
 	if height <= 0 {
-		height = 1080
+		height = defaultHeight
 	}
 	winH := height - 85
 	if winH < 600 {
@@ -113,9 +139,9 @@ func parseResPair(res string) (int, int) {
 
 func parseDarwinResolution(out string) (int, int) {
 	if m := reDarwinRes.FindStringSubmatch(out); len(m) >= 3 {
-		w, _ := strconv.Atoi(m[1])
-		h, _ := strconv.Atoi(m[2])
-		if w > 0 && h > 0 {
+		w, wErr := strconv.Atoi(m[1])
+		h, hErr := strconv.Atoi(m[2])
+		if wErr == nil && hErr == nil && w > 0 && h > 0 {
 			return w, h
 		}
 	}
@@ -171,69 +197,65 @@ func parseWindowsResolution(out string) (int, int) {
 		}
 		w, wErr := strconv.Atoi(m[1])
 		h, hErr := strconv.Atoi(m[2])
-		if wErr == nil && hErr == nil && w*h > bestW*bestH {
+		if wErr == nil && hErr == nil && w > 0 && h > 0 && int64(w)*int64(h) > int64(bestW)*int64(bestH) {
 			bestW, bestH = w, h
 		}
 	}
 	return bestW, bestH
 }
 
-func detectResolutionOS(goos string) (int, int) {
+func (p prober) detectResolutionOS(goos string) (int, int) {
 	switch goos {
 	case "darwin":
-		if out, err := runProbe("system_profiler", "SPDisplaysDataType"); err == nil {
+		if out, err := p.run("system_profiler", "SPDisplaysDataType"); err == nil {
 			if w, h := parseDarwinResolution(string(out)); w > 0 && h > 0 {
 				return w, h
 			}
 		}
-		return 1920, 1080
+		return defaultWidth, defaultHeight
 
 	case "windows":
-		winScript := "Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | " +
-			"ForEach-Object { \"$($_.CurrentHorizontalResolution)x$($_.CurrentVerticalResolution)\" }; " +
-			"Add-Type -TypeDefinition 'using System.Runtime.InteropServices; " +
-			"public class Dpi { [DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware(); }'; " +
-			"[void][Dpi]::SetProcessDPIAware(); " +
-			"Add-Type -AssemblyName System.Windows.Forms; " +
-			"[System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width.ToString() + 'x' + " +
-			"[System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height.ToString()"
-		if out, err := runProbe("powershell", "-NoProfile", "-Command", winScript); err == nil {
+		if out, err := p.run("powershell", "-NoProfile", "-Command", windowsResolutionScript); err == nil {
 			if w, h := parseWindowsResolution(string(out)); w > 0 && h > 0 {
 				return w, h
 			}
 		}
-		return 1920, 1080
+		return defaultWidth, defaultHeight
 
 	default: // linux and unix
-		if out, err := runProbe("xrandr"); err == nil {
+		if out, err := p.run("xrandr"); err == nil {
 			if w, h := parseXrandrResolution(string(out)); w > 0 && h > 0 {
 				return w, h
 			}
 		}
-		if out, err := runProbe("wlr-randr"); err == nil {
+		if out, err := p.run("wlr-randr"); err == nil {
 			if w, h := parseWlrResolution(string(out)); w > 0 && h > 0 {
 				return w, h
 			}
 		}
-		if w, h := detectDRMResolution(); w > 0 && h > 0 {
+		if w, h := detectDRMResolution(p.drmGlob); w > 0 && h > 0 {
 			return w, h
 		}
-		return 1920, 1080
+		return defaultWidth, defaultHeight
 	}
 }
 
-func detectDRMResolution() (int, int) {
-	modes, _ := filepath.Glob("/sys/class/drm/*/modes")
+func detectDRMResolution(globPattern string) (int, int) {
+	if globPattern == "" {
+		globPattern = defaultDRMGlob
+	}
+	modes, err := filepath.Glob(globPattern)
+	if err != nil {
+		return 0, 0
+	}
 	for _, modeFile := range modes {
-		data, err := os.ReadFile(modeFile)
-		if err != nil {
+		data, readErr := os.ReadFile(modeFile)
+		if readErr != nil {
 			continue
 		}
-		lines := strings.Split(string(data), "\n")
-		if len(lines) > 0 {
-			if w, h := parseResPair(lines[0]); w > 0 && h > 0 {
-				return w, h
-			}
+		firstLine, _, _ := strings.Cut(string(data), "\n")
+		if w, h := parseResPair(firstLine); w > 0 && h > 0 {
+			return w, h
 		}
 	}
 	return 0, 0

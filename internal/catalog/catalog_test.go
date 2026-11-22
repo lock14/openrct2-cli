@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestLoadCuratedAndQueries(t *testing.T) {
+func TestLoadCuratedQueriesAndDefensiveCopies(t *testing.T) {
 	t.Parallel()
 	cat, err := LoadCurated()
 	if err != nil {
@@ -19,11 +19,18 @@ func TestLoadCuratedAndQueries(t *testing.T) {
 		t.Fatalf("addons = %d, want >= 10", len(cat.Addons))
 	}
 
-	if ch := cat.FindChannel("stable"); ch == nil || ch.ID != "release" {
+	ch := cat.FindChannel("stable")
+	if ch == nil || ch.ID != "release" {
 		t.Fatalf("FindChannel(stable) = %v, want release", ch)
 	}
-	if ch := cat.FindChannel("nightly"); ch == nil || ch.ID != "develop" {
-		t.Fatalf("FindChannel(nightly) = %v, want develop", ch)
+	// Mutating returned ChannelConfig must not mutate Catalog internals
+	ch.Aliases[0] = "mutated-alias"
+	if cat.FindChannel("stable") == nil {
+		t.Fatal("expected FindChannel to return a defensive copy")
+	}
+
+	if dev := cat.FindChannel("nightly"); dev == nil || dev.ID != "develop" {
+		t.Fatalf("FindChannel(nightly) = %v, want develop", dev)
 	}
 
 	cases := []struct {
@@ -43,6 +50,13 @@ func TestLoadCuratedAndQueries(t *testing.T) {
 			t.Errorf("FindAddon(%q) = %v, want %q", tc.query, got, tc.wantID)
 		}
 	}
+
+	// Mutating returned Addon slice must not mutate Catalog internals
+	rve := cat.FindAddon("rve")
+	rve.Targets[0] = "mutated.js"
+	if cat.FindAddon("rve").Targets[0] == "mutated.js" {
+		t.Fatal("expected FindAddon to return a defensive copy")
+	}
 }
 
 func TestUserCatalogLayerAndQuarantine(t *testing.T) {
@@ -53,6 +67,20 @@ func TestUserCatalogLayerAndQuarantine(t *testing.T) {
 	badPath := filepath.Join(userDir, "addon.broken.json")
 	if err := os.WriteFile(badPath, []byte(`{"schema_version": 999}`), 0o644); err != nil {
 		t.Fatal(err)
+	}
+
+	// Reject custom addon with invalid SHA-256 digest
+	if _, err := SaveUserAddon(userDir, Addon{
+		ID:        "bad-hash",
+		AddonType: AddonTypePlugin,
+		Source: AddonSource{
+			URL:        "https://example.com/mod.js",
+			SHA256:     "short-hash",
+			Mode:       InstallModeFile,
+			TargetPath: "plugin/mod.js",
+		},
+	}); err == nil {
+		t.Fatal("expected SaveUserAddon to reject malformed sha256")
 	}
 
 	// Add one valid custom plugin
@@ -93,15 +121,21 @@ func TestUserCatalogLayerAndQuarantine(t *testing.T) {
 		t.Fatalf("RemoveUserAddon = (%v, %v), want (true, nil)", removed, err)
 	}
 
-	// Verify DecodeEntityBytes strict validation and personal-path rejection
+	// Verify DecodeEntityBytes strict validation, path traversal rejection, and personal-path rejection
 	badDocs := [][]byte{
 		[]byte(``),
 		[]byte(`{"schema_version":1,"kind":"addon"}{"extra":1}`),
 		[]byte(`{"schema_version":1,"kind":"unknown","id":"x"}`),
 		[]byte(`{"schema_version":1,"kind":"addon","id":"BAD_ID","addon_type":"plugin",` +
-			`"source":{"url":"https://x","mode":"file"},"targets":["a.js"]}`),
+			`"source":{"url":"https://x","mode":"file","target_path":"plugin/a.js"},"targets":["plugin/a.js"]}`),
 		[]byte(`{"schema_version":1,"kind":"addon","id":"x","addon_type":"plugin",` +
-			`"source":{"url":"https://example.com` + `/Users/` + `alice/x","mode":"file"},"targets":["a.js"]}`),
+			`"source":{"url":"https://x","mode":"file","target_path":"../evil.js"},"targets":["plugin/a.js"]}`),
+		[]byte(`{"schema_version":1,"kind":"addon","id":"x","addon_type":"plugin",` +
+			`"source":{"url":"https://x","sha256":"bad","mode":"file",` +
+			`"target_path":"plugin/a.js"},"targets":["plugin/a.js"]}`),
+		[]byte(`{"schema_version":1,"kind":"addon","id":"x","addon_type":"plugin",` +
+			`"source":{"url":"https://example.com` + `/Users/` + `alice/x","mode":"file",` +
+			`"target_path":"plugin/a.js"},"targets":["plugin/a.js"]}`),
 	}
 	for i, doc := range badDocs {
 		if _, _, err := DecodeEntityBytes(doc, "test.json", LayerCurated); err == nil {

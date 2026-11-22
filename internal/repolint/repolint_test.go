@@ -38,6 +38,24 @@ func TestLintCuratedCatalogAndTemplates(t *testing.T) {
 	}
 }
 
+func TestLintMarkdownDocDetectsViolations(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	badReadme := "# Title\n\nSee [broken](#missing-anchor) and [bad](missing.md).\n\n---\n\n```json\n{\"unclosed\": 1\n"
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte(badReadme), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var msgs []string
+	lintMarkdownDoc(root, "README.md", func(_, format string, a ...any) {
+		msgs = append(msgs, Issue{Message: strings.TrimSpace(format)}.Message)
+		_ = a
+	})
+	if len(msgs) < 3 {
+		t.Fatalf("expected broken anchor, broken file link, divider, and unclosed fence errors; got %d", len(msgs))
+	}
+}
+
 func TestLintLiveRepository(t *testing.T) {
 	t.Parallel()
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))

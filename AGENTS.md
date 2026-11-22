@@ -49,21 +49,22 @@
 
 * **Destructive safety, idempotence, and security policy**:
   * **Mandatory atomic writes and change-detected backups**: All configuration, catalog, and receipt writes must use
-    `fsutil.WriteFileAtomic`, `fsutil.WriteFileAtomicIfChanged`, or `fsutil.WriteTextAtomicIfChanged`. Backups
-    (`.bak.<timestamp>`, retaining at most `MaxBackupsPerFile = 3` per file) must only be generated when the existing
-    regular file content actually differs, preventing backup accumulation across repeated identical runs.
+    `fsutil.WriteFileAtomic`, `fsutil.WriteFileAtomicIfChanged`, `fsutil.WriteTextAtomicIfChanged`, or
+    `fsutil.WriteJSONAtomicIfChanged`. Backups (`.bak.<timestamp>`, retaining at most `MaxBackupsPerFile = 3` per file)
+    must only be generated when the existing regular file content actually differs, preventing backup accumulation
+    across repeated identical runs.
   * **Non-clobbering INI updates**: When `config.ini` already exists and `--force` is not passed, `rctcfg.Deploy`
     preserves user settings and surgically backfills missing or invalid `game_path` and `rct1_path` entries rather than
     clobbering in-game customizations. `config.json` preserves unknown top-level JSON keys across `SaveConfig` calls.
   * **Clean uninstallation**: `rct config uninstall` removes deployed `config.ini`, `shortcuts.json`,
     `OpenRCT2.desktop`, and icons while preserving user saves (`save/`), scenarios (`scenario/`), tracks (`track/`),
-    and screenshots.
+    and screenshots (`--all` additionally delegates managed engine cleanup to `engine.Uninstall`).
   * **Verified HTTP downloads and archive jailing**: Outbound downloads in `engine.Installer` and `content.Installer`
     must use `fsutil.DownloadVerifiedContext` with `fsutil.UserAgent`, enforcing bounded stream sizes
     (`MaxDownloadBytes`), rejecting HTTPS downgrade redirects, and verifying 64-character hex SHA-256 checksums before
     renaming over any target. ZIP extractions (`macos-universal.zip`, `windows-portable-*.zip`, asset packs, and zipped
-    plugins) must extract inside `os.OpenRoot` after validating relative paths via `fsutil.CleanRel` and
-    `fsutil.SafeJoin`.
+    plugins) must use `fsutil.ExtractZip` / `fsutil.ExtractZipFiles` inside `os.OpenRoot` (enforcing `CleanRel`,
+    per-entry `MaxExtractFileBytes`, total-archive `MaxExtractTotalBytes`, and `MaxZipEntries`).
 
 * **OpenRCT2 configuration and add-on standards**:
   * **Control scheme**: Preserve curated WASD viewport panning, Q/E camera rotation, and PageUp/PageDown zoom bindings
@@ -91,22 +92,22 @@
   `configs/desktop/*`.
 * `catalog/`: Curated JSON entities (`channel.release.json`, `channel.develop.json`, `addon.*.json`).
 * `configs/`: Tokenized `config.ini`, WASD `shortcuts.json`, `OpenRCT2.desktop`, and `openrct2.png`.
-* `cmd/rct/`: Modular Cobra CLI implementation (`main.go`, `setup.go`, `engine.go`, `games.go`, `addons.go`,
-  `config.go`).
-* `internal/fsutil/`: Atomic writes, idempotent change-detected backups, `CleanRel`/`SafeJoin`, and SHA-256 verified
-  HTTP downloads.
-* `internal/config/`: Platform path resolution (`ResolveFor`) and `config.json` persistence (`AppConfig`).
-* `internal/display/`: Primary monitor resolution probing and HiDPI `window_scale` calculation.
-* `internal/catalog/`: Strict entity codec, two-layer `catalog.d` loader with quarantine, query resolver, and user
-  catalog store.
+* `cmd/rct/`: Modular Cobra CLI implementation (`main.go`, `completions.go`, `setup.go`, `engine.go`, `games.go`,
+  `addons.go`, `config.go`).
+* `internal/fsutil/`: Atomic file/JSON/symlink writes, idempotent change-detected backups, `CleanRel`/`SafeJoin`,
+  `os.OpenRoot` bounded ZIP extraction, and SHA-256 verified HTTP downloads.
+* `internal/config/`: Platform path resolution (`ResolveFor`) and schema-driven `config.json` persistence (`AppConfig`).
+* `internal/display/`: Injectable primary monitor resolution probing and HiDPI `window_scale` calculation.
+* `internal/catalog/`: Strict entity validator/codec, two-layer `catalog.d` loader with quarantine, defensive-copy query
+  resolver, and user catalog store.
 * `internal/gamedata/`: Steam `libraryfolders.vdf` parser, GOG/Wine/local scanner, and case-insensitive RCT2/Classic
   (`g1.dat`) and RCT1 (`csg1.dat`) directory validators.
-* `internal/rctcfg/`: Section-preserving INI parser/merger, template renderer, FreeDesktop deployer, cross-platform
-  line diff, reverse sanitizer (`SyncConfigs`), and safe uninstaller.
+* `internal/rctcfg/`: Deterministic section-preserving INI parser/merger, template renderer, FreeDesktop deployer, LCS
+  line diff, reverse sanitizer (`SyncConfigs`), and safe config uninstaller.
 * `internal/engine/`: GitHub Releases resolver (`OpenRCT2/OpenRCT2` and `OpenRCT2/OpenRCT2-binaries`), `os.OpenRoot`
-  macOS `.app` and Windows portable `.zip` extractor, receipt tracker, and process launcher (`PrepareLaunch`).
+  macOS `.app` and Windows portable `.zip` installer/uninstaller, receipt tracker, and process launcher (`PrepareLaunch`).
 * `internal/content/`: SHA-256 verified asset pack and JavaScript plugin installer/uninstaller with per-addon file
-  receipts.
+  receipts and superseded file pruning on upgrade.
 * `internal/repolint/`: Catalog, template, documentation, link/anchor, and `README.md` table parity linter.
 
 # Verification checklist for agents

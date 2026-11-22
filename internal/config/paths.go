@@ -34,13 +34,24 @@ func GetPaths() *Paths {
 	return ResolveFor(runtime.GOOS)
 }
 
+func resolveHomeDir(targetOS string) string {
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return home
+	}
+	if targetOS == "windows" {
+		if up := strings.TrimSpace(os.Getenv("USERPROFILE")); up != "" {
+			return up
+		}
+	}
+	if h := strings.TrimSpace(os.Getenv("HOME")); h != "" {
+		return h
+	}
+	return os.TempDir()
+}
+
 // ResolveFor returns platform-idiomatic paths for targetOS ("linux", "darwin", or "windows").
 func ResolveFor(targetOS string) *Paths {
-	home, _ := os.UserHomeDir()
-	if home == "" {
-		home = os.Getenv("HOME")
-	}
-
+	home := resolveHomeDir(targetOS)
 	p := &Paths{}
 
 	switch targetOS {
@@ -55,11 +66,11 @@ func ResolveFor(targetOS string) *Paths {
 		p.EngineDir = filepath.Join(p.AppsDir, "OpenRCT2.app")
 
 	case "windows":
-		localAppData := os.Getenv("LOCALAPPDATA")
+		localAppData := strings.TrimSpace(os.Getenv("LOCALAPPDATA"))
 		if localAppData == "" {
 			localAppData = filepath.Join(home, "AppData", "Local")
 		}
-		userProfile := os.Getenv("USERPROFILE")
+		userProfile := strings.TrimSpace(os.Getenv("USERPROFILE"))
 		if userProfile == "" {
 			userProfile = home
 		}
@@ -74,15 +85,15 @@ func ResolveFor(targetOS string) *Paths {
 		p.EngineDir = filepath.Join(programsRoot, "engine")
 
 	default: // "linux" and other XDG Unix platforms
-		xdgConfig := os.Getenv("XDG_CONFIG_HOME")
+		xdgConfig := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME"))
 		if xdgConfig == "" {
 			xdgConfig = filepath.Join(home, ".config")
 		}
-		xdgData := os.Getenv("XDG_DATA_HOME")
+		xdgData := strings.TrimSpace(os.Getenv("XDG_DATA_HOME"))
 		if xdgData == "" {
 			xdgData = filepath.Join(home, ".local", "share")
 		}
-		xdgState := os.Getenv("XDG_STATE_HOME")
+		xdgState := strings.TrimSpace(os.Getenv("XDG_STATE_HOME"))
 		if xdgState == "" {
 			xdgState = filepath.Join(home, ".local", "state")
 		}
@@ -130,13 +141,8 @@ func (p *Paths) SetStateDir(dir string) {
 	p.AddonReceiptsFile = filepath.Join(dir, "addon-receipts.json")
 }
 
-// SetBinDir updates BinDir.
+// SetBinDir updates BinDir without coupling EngineDir to BinDir.
 func (p *Paths) SetBinDir(dir string) {
-	p.SetBinDirForOS(runtime.GOOS, dir)
-}
-
-// SetBinDirForOS updates BinDir without coupling EngineDir to BinDir.
-func (p *Paths) SetBinDirForOS(_, dir string) {
 	p.BinDir = dir
 }
 
@@ -163,11 +169,6 @@ func (p *Paths) EnginePayloadForOS(targetOS string) string {
 	}
 }
 
-// ManagedEngineBinary returns the primary OpenRCT2 command path for the current OS.
-func (p *Paths) ManagedEngineBinary() string {
-	return p.ManagedEngineBinaryForOS(runtime.GOOS)
-}
-
 // ManagedEngineBinaryForOS returns the primary OpenRCT2 entrypoint path for targetOS.
 func (p *Paths) ManagedEngineBinaryForOS(targetOS string) string {
 	if p == nil {
@@ -186,7 +187,7 @@ func (p *Paths) ManagedHeadlessBinaryForOS(targetOS string) string {
 	}
 	if targetOS == "windows" {
 		cand := filepath.Join(p.EngineDir, "openrct2-cli.exe")
-		if _, err := os.Stat(cand); err == nil {
+		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
 			return cand
 		}
 		return filepath.Join(p.EngineDir, "openrct2.exe")

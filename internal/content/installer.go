@@ -3,17 +3,15 @@
 package content
 
 import (
-	"archive/zip"
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -34,35 +32,19 @@ type AddonReceipt struct {
 // LoadAddonReceipts reads the add-on receipt map from path if present.
 func LoadAddonReceipts(path string) (map[string]AddonReceipt, error) {
 	out := make(map[string]AddonReceipt)
-	if strings.TrimSpace(path) == "" {
-		return out, nil
-	}
-	data, err := os.ReadFile(path)
+	ok, err := fsutil.ReadJSONFile(path, &out)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return out, nil
-		}
 		return nil, err
 	}
-	if err := json.Unmarshal(data, &out); err != nil {
-		return nil, err
+	if !ok || out == nil {
+		return make(map[string]AddonReceipt), nil
 	}
 	return out, nil
 }
 
 // SaveAddonReceipts writes the add-on receipt map atomically to path.
 func SaveAddonReceipts(path string, receipts map[string]AddonReceipt) error {
-	if strings.TrimSpace(path) == "" {
-		return nil
-	}
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(receipts); err != nil {
-		return err
-	}
-	_, _, err := fsutil.WriteFileAtomicIfChanged(path, buf.Bytes(), 0o644)
+	_, _, err := fsutil.WriteJSONAtomicIfChanged(path, receipts, 0o644)
 	return err
 }
 
@@ -105,8 +87,11 @@ func NewInstaller(paths *config.Paths, force bool, out io.Writer) *Installer {
 	}
 }
 
-// InstallAll installs all add-ons in list (or all add-ons in cat), collecting any errors.
+// InstallAll installs all add-ons in addons sequentially, collecting any errors.
 func (ins *Installer) InstallAll(ctx context.Context, addons []catalog.Addon) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var errs []error
 	for _, ad := range addons {
 		if err := ctx.Err(); err != nil {
@@ -134,6 +119,11 @@ func (ins *Installer) InstallAddon(ctx context.Context, addon catalog.Addon) err
 		return nil
 	}
 
+	receipts, err := LoadAddonReceipts(ins.Paths.AddonReceiptsFile)
+	if err != nil {
+		return fmt.Errorf("loading addon receipts %s: %w", ins.Paths.AddonReceiptsFile, err)
+	}
+
 	fmt.Fprintf(ins.Out, "Installing %s (%s)...\n", addon.EffectiveDisplayName(), addon.Version)
 
 	tmpDir, err := os.MkdirTemp("", "rct-addon-dl-*")
@@ -154,46 +144,19 @@ func (ins *Installer) InstallAddon(ctx context.Context, addon catalog.Addon) err
 		return fmt.Errorf("downloading %s: %w", addon.ID, err)
 	}
 
-	var installedFiles []string
-	switch addon.Source.Mode {
-	case catalog.InstallModeFile:
-		cleanRel, relErr := fsutil.CleanRel(addon.Source.TargetPath)
-		if relErr != nil {
-			return fmt.Errorf("invalid target_path for %s: %w", addon.ID, relErr)
-		}
-		dest, joinErr := fsutil.SafeJoin(ins.Paths.OpenRCT2Dir, cleanRel)
-		if joinErr != nil {
-			return joinErr
-		}
-		payloadBytes, readErr := os.ReadFile(tmpPayload)
-		if readErr != nil {
-			return readErr
-		}
-		if _, _, wErr := fsutil.WriteFileAtomicIfChanged(dest, payloadBytes, 0o644); wErr != nil {
-			return wErr
-		}
-		installedFiles = []string{cleanRel}
-
-	case catalog.InstallModeZip:
-		extracted, exErr := extractAddonZip(tmpPayload, ins.Paths.OpenRCT2Dir, addon.Source.TargetDir)
-		if exErr != nil {
-			return fmt.Errorf("extracting %s: %w", addon.ID, exErr)
-		}
-		installedFiles = extracted
-
-	default:
-		return fmt.Errorf("unsupported install mode %q for %s", addon.Source.Mode, addon.ID)
+	installedFiles, err := ins.deployPayload(tmpPayload, addon)
+	if err != nil {
+		return err
 	}
-
 	if !IsInstalled(ins.Paths.OpenRCT2Dir, addon) {
 		return fmt.Errorf("addon %s extracted successfully, but expected target files were not found", addon.ID)
 	}
 
-	receipts, _ := LoadAddonReceipts(ins.Paths.AddonReceiptsFile)
-	if receipts == nil {
-		receipts = make(map[string]AddonReceipt)
+	if prev, hadPrev := receipts[addon.ID]; hadPrev {
+		pruneSupersededAddonFiles(ins.Paths.OpenRCT2Dir, prev.Files, installedFiles)
 	}
-	sort.Strings(installedFiles)
+
+	slices.Sort(installedFiles)
 	receipts[addon.ID] = AddonReceipt{
 		ID:          addon.ID,
 		Version:     addon.Version,
@@ -209,13 +172,39 @@ func (ins *Installer) InstallAddon(ctx context.Context, addon catalog.Addon) err
 	return nil
 }
 
-func extractAddonZip(zipPath, openrct2Dir, targetSubdir string) ([]string, error) {
-	zr, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return nil, err
-	}
-	defer zr.Close()
+func (ins *Installer) deployPayload(tmpPayload string, addon catalog.Addon) ([]string, error) {
+	switch addon.Source.Mode {
+	case catalog.InstallModeFile:
+		cleanRel, relErr := fsutil.CleanRel(addon.Source.TargetPath)
+		if relErr != nil {
+			return nil, fmt.Errorf("invalid target_path for %s: %w", addon.ID, relErr)
+		}
+		dest, joinErr := fsutil.SafeJoin(ins.Paths.OpenRCT2Dir, cleanRel)
+		if joinErr != nil {
+			return nil, joinErr
+		}
+		payloadBytes, readErr := os.ReadFile(tmpPayload)
+		if readErr != nil {
+			return nil, readErr
+		}
+		if _, _, wErr := fsutil.WriteFileAtomicIfChanged(dest, payloadBytes, 0o644); wErr != nil {
+			return nil, wErr
+		}
+		return []string{cleanRel}, nil
 
+	case catalog.InstallModeZip:
+		extracted, exErr := extractAddonZip(tmpPayload, ins.Paths.OpenRCT2Dir, addon.Source.TargetDir)
+		if exErr != nil {
+			return nil, fmt.Errorf("extracting %s: %w", addon.ID, exErr)
+		}
+		return extracted, nil
+
+	default:
+		return nil, fmt.Errorf("unsupported install mode %q for %s", addon.Source.Mode, addon.ID)
+	}
+}
+
+func extractAddonZip(zipPath, openrct2Dir, targetSubdir string) ([]string, error) {
 	extractRoot := openrct2Dir
 	relPrefix := ""
 	trimmedSub := strings.TrimSpace(targetSubdir)
@@ -232,66 +221,38 @@ func extractAddonZip(zipPath, openrct2Dir, targetSubdir string) ([]string, error
 		relPrefix = cleanSub + "/"
 	}
 
-	if err := os.MkdirAll(extractRoot, 0o755); err != nil {
-		return nil, err
-	}
-	root, err := os.OpenRoot(extractRoot)
+	extracted, err := fsutil.ExtractZip(zipPath, extractRoot, fsutil.ExtractZipOptions{
+		AllowBundleSymlinks: false,
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer root.Close()
-
-	var extracted []string
-	for _, zf := range zr.File {
-		slash := strings.ReplaceAll(zf.Name, `\`, `/`)
-		if slash == "" || strings.HasSuffix(slash, "/") || zf.FileInfo().IsDir() {
-			continue
-		}
-		if zf.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("refusing symlink entry %q in addon archive", zf.Name)
-		}
-		cleanRel, relErr := fsutil.CleanRel(slash)
-		if relErr != nil {
-			return nil, fmt.Errorf("unsafe archive entry %q: %w", zf.Name, relErr)
-		}
-		osRel := filepath.FromSlash(cleanRel)
-		parent := filepath.Dir(osRel)
-		if parent != "." && parent != "" {
-			if err := root.MkdirAll(parent, 0o755); err != nil {
-				return nil, err
-			}
-		}
-		rc, openErr := zf.Open()
-		if openErr != nil {
-			return nil, openErr
-		}
-		outFile, createErr := root.OpenFile(osRel, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-		if createErr != nil {
-			_ = rc.Close()
-			return nil, createErr
-		}
-		limited := &io.LimitedReader{R: rc, N: fsutil.MaxExtractFileBytes + 1}
-		written, copyErr := io.Copy(outFile, limited)
-		closeErr := outFile.Close()
-		_ = rc.Close()
-		if copyErr != nil {
-			_ = root.Remove(osRel)
-			return nil, copyErr
-		}
-		if written > fsutil.MaxExtractFileBytes {
-			_ = root.Remove(osRel)
-			return nil, fmt.Errorf("archive entry %q exceeds size limit", zf.Name)
-		}
-		if closeErr != nil {
-			return nil, closeErr
-		}
-		extracted = append(extracted, relPrefix+cleanRel)
+	if relPrefix == "" {
+		return extracted, nil
 	}
-
-	if err := root.Close(); err != nil {
-		return nil, err
+	for i, rel := range extracted {
+		extracted[i] = relPrefix + rel
 	}
 	return extracted, nil
+}
+
+func pruneSupersededAddonFiles(openrct2Dir string, previousFiles, currentFiles []string) {
+	keep := make(map[string]bool, len(currentFiles))
+	for _, f := range currentFiles {
+		if clean, err := fsutil.CleanRel(f); err == nil {
+			keep[clean] = true
+		}
+	}
+	for _, oldRel := range previousFiles {
+		clean, err := fsutil.CleanRel(oldRel)
+		if err != nil || keep[clean] {
+			continue
+		}
+		if dest, joinErr := fsutil.SafeJoin(openrct2Dir, clean); joinErr == nil {
+			_ = os.Remove(dest)
+			fsutil.RemoveBackups(dest)
+		}
+	}
 }
 
 // UninstallAddon removes all installed files tracked for addon under paths.OpenRCT2Dir.
@@ -303,12 +264,16 @@ func UninstallAddon(paths *config.Paths, addon catalog.Addon, out io.Writer) (in
 		out = io.Discard
 	}
 
-	receipts, _ := LoadAddonReceipts(paths.AddonReceiptsFile)
+	receipts, err := LoadAddonReceipts(paths.AddonReceiptsFile)
+	if err != nil {
+		return 0, fmt.Errorf("loading addon receipts %s: %w", paths.AddonReceiptsFile, err)
+	}
+
 	seen := make(map[string]bool)
 	var relList []string
 	addRel := func(r string) {
-		clean, err := fsutil.CleanRel(r)
-		if err == nil && !seen[clean] {
+		clean, relErr := fsutil.CleanRel(r)
+		if relErr == nil && !seen[clean] {
 			seen[clean] = true
 			relList = append(relList, clean)
 		}
@@ -324,20 +289,22 @@ func UninstallAddon(paths *config.Paths, addon catalog.Addon, out io.Writer) (in
 
 	removed := 0
 	for _, rel := range relList {
-		dest, err := fsutil.SafeJoin(paths.OpenRCT2Dir, rel)
-		if err != nil {
+		dest, joinErr := fsutil.SafeJoin(paths.OpenRCT2Dir, rel)
+		if joinErr != nil {
 			continue
 		}
-		if err := os.Remove(dest); err == nil {
+		if rmErr := os.Remove(dest); rmErr == nil {
 			removed++
+		} else if !errors.Is(rmErr, fs.ErrNotExist) {
+			return removed, fmt.Errorf("removing %s: %w", dest, rmErr)
 		}
 		fsutil.RemoveBackups(dest)
 	}
 
-	if receipts != nil {
-		if _, ok := receipts[addon.ID]; ok {
-			delete(receipts, addon.ID)
-			_ = SaveAddonReceipts(paths.AddonReceiptsFile, receipts)
+	if _, ok := receipts[addon.ID]; ok {
+		delete(receipts, addon.ID)
+		if err := SaveAddonReceipts(paths.AddonReceiptsFile, receipts); err != nil {
+			return removed, fmt.Errorf("saving addon receipts: %w", err)
 		}
 	}
 

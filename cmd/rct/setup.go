@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -39,17 +40,9 @@ func newSetupCmd() *cobra.Command {
 				return err
 			}
 
-			effectiveChannel := cfg.EffectiveChannel()
-			if strings.TrimSpace(channelFlag) != "" {
-				normCh, chErr := config.NormalizeChannel(channelFlag)
-				if chErr != nil {
-					return chErr
-				}
-				effectiveChannel = normCh
-			}
-			chCfg := cat.FindChannel(effectiveChannel)
-			if chCfg == nil {
-				return fmt.Errorf("channel %q is not defined in catalog", effectiveChannel)
+			effectiveChannel, chCfg, err := resolveTargetChannel(cfg, cat, channelFlag)
+			if err != nil {
+				return err
 			}
 
 			fmt.Fprintln(out, "============================================================")
@@ -156,9 +149,14 @@ func newSetupCmd() *cobra.Command {
 				fmt.Fprintln(out)
 			}
 
-			if strings.TrimSpace(channelFlag) != "" && cfg.Channel != effectiveChannel {
+			if strings.TrimSpace(channelFlag) != "" &&
+				!slices.Contains(failedSteps, "engine") &&
+				cfg.Channel != effectiveChannel {
 				cfg.Channel = effectiveChannel
-				_ = config.SaveConfig(paths, cfg)
+				if err := config.SaveConfig(paths, cfg); err != nil {
+					fmt.Fprintf(errOut, "Warning: could not save channel preference: %v\n", err)
+					failedSteps = append(failedSteps, "config")
+				}
 			}
 
 			if len(failedSteps) > 0 {
@@ -182,6 +180,7 @@ func newSetupCmd() *cobra.Command {
 		&channelFlag, "channel", "", "Engine release channel to install (release or develop)",
 	)
 	setupCmd.Flags().BoolVar(&skipAddonsFlag, "skip-addons", false, "Skip downloading asset packs and JS plugins")
+	registerChannelFlagCompletion(setupCmd, "channel")
 
 	return setupCmd
 }

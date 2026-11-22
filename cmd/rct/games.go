@@ -1,9 +1,11 @@
 package main
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -47,14 +49,8 @@ func runGamesStatus(cmd *cobra.Command, _ []string) error {
 	iniPath := filepath.Join(paths.OpenRCT2Dir, "config.ini")
 	iniRCT2, iniRCT1 := rctcfg.ReadExistingGamePaths(iniPath)
 
-	effRCT2 := iniRCT2
-	if effRCT2 == "" {
-		effRCT2 = cfg.RCT2Path
-	}
-	effRCT1 := iniRCT1
-	if effRCT1 == "" {
-		effRCT1 = cfg.RCT1Path
-	}
+	effRCT2 := cmp.Or(iniRCT2, cfg.RCT2Path)
+	effRCT1 := cmp.Or(iniRCT1, cfg.RCT1Path)
 
 	if edition, ok := gamedata.ValidateRCT2Dir(effRCT2); ok {
 		fmt.Fprintf(out, "RCT2 (game_path): [✓ Valid]   %s (%s)\n", effRCT2, edition)
@@ -90,8 +86,7 @@ func newGamesScanCmd() *cobra.Command {
 			paths, cfg := loadPathsAndConfig(errOut)
 
 			iniRCT2, iniRCT1 := rctcfg.ReadExistingGamePaths(filepath.Join(paths.OpenRCT2Dir, "config.ini"))
-			hints := append([]string{}, extraRoots...)
-			hints = append(hints, cfg.RCT2Path, cfg.RCT1Path, iniRCT2, iniRCT1)
+			hints := append(slices.Clone(extraRoots), cfg.RCT2Path, cfg.RCT1Path, iniRCT2, iniRCT1)
 
 			roots := gamedata.DefaultSearchRoots(hints...)
 			res := gamedata.Discover(roots)
@@ -142,9 +137,10 @@ func newGamesSetCmd() *cobra.Command {
 
 			if rct2Clean != "" {
 				abs2, err := filepath.Abs(rct2Clean)
-				if err == nil {
-					rct2Clean = abs2
+				if err != nil {
+					return fmt.Errorf("resolving RCT2 path %q: %w", rct2Clean, err)
 				}
+				rct2Clean = abs2
 				if _, ok := gamedata.ValidateRCT2Dir(rct2Clean); !ok {
 					return fmt.Errorf(
 						"invalid RCT2 directory %q (expected Data/g1.dat and ObjData/ or Assets/g1.dat)",
@@ -155,9 +151,10 @@ func newGamesSetCmd() *cobra.Command {
 			}
 			if rct1Clean != "" {
 				abs1, err := filepath.Abs(rct1Clean)
-				if err == nil {
-					rct1Clean = abs1
+				if err != nil {
+					return fmt.Errorf("resolving RCT1 path %q: %w", rct1Clean, err)
 				}
+				rct1Clean = abs1
 				if !gamedata.ValidateRCT1Dir(rct1Clean) {
 					return fmt.Errorf("invalid RCT1 directory %q (expected Data/csg1.dat)", rct1Clean)
 				}

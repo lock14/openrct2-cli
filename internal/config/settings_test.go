@@ -66,7 +66,6 @@ func TestSaveAndLoadConfigPreservesUnknownKeys(t *testing.T) {
 	if err := SaveConfig(p, &AppConfig{Channel: "release"}); err != nil {
 		t.Fatalf("save initial: %v", err)
 	}
-	// Overwrite with unknown key and verify round-trip preservation
 	if err := writeRaw(p.ConfigFile, initial); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +94,7 @@ func TestSaveAndLoadConfigPreservesUnknownKeys(t *testing.T) {
 	}
 }
 
-func TestNormalizeChannel(t *testing.T) {
+func TestNormalizeChannelAndKeyAccessors(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		in      string
@@ -115,6 +114,33 @@ func TestNormalizeChannel(t *testing.T) {
 		if (err != nil) != tc.wantErr || got != tc.want {
 			t.Errorf("NormalizeChannel(%q) = (%q, %v), want (%q, err=%v)", tc.in, got, err, tc.want, tc.wantErr)
 		}
+	}
+
+	keys := ValidKeys()
+	if len(keys) != 7 {
+		t.Fatalf("ValidKeys = %v, want 7 keys", keys)
+	}
+	keys[0] = "mutated"
+	if ValidKeys()[0] == "mutated" {
+		t.Fatal("ValidKeys must return a defensive copy")
+	}
+
+	cfg := &AppConfig{}
+	p := ResolveFor("linux")
+	key, val, err := cfg.Set("openrct2-dir", "/tmp/custom-openrct2")
+	if err != nil || key != KeyOpenRCT2Dir || val != "/tmp/custom-openrct2" {
+		t.Fatalf("cfg.Set(openrct2-dir) = (%q, %q, %v)", key, val, err)
+	}
+	ApplyConfigPaths(p, cfg, "linux")
+	eff, err := GetEffective(p, cfg, "openrct2-dir")
+	if err != nil || eff != "/tmp/custom-openrct2" {
+		t.Fatalf("GetEffective = (%q, %v)", eff, err)
+	}
+	if _, _, err := cfg.Set("channel", "invalid"); err == nil {
+		t.Fatal("expected invalid channel error in cfg.Set")
+	}
+	if _, err := NormalizeKey("nonexistent"); err == nil {
+		t.Fatal("expected unknown key error")
 	}
 }
 
@@ -136,7 +162,6 @@ func TestApplyConfigPathsAndHelpers(t *testing.T) {
 	if ValueSource("") != "default" || ValueSource("set") != "config" {
 		t.Fatal("ValueSource mismatch")
 	}
-	// Headless binary falls back to openrct2.exe until openrct2-cli.exe exists
 	if !strings.HasSuffix(p.ManagedHeadlessBinaryForOS("windows"), "openrct2.exe") {
 		t.Fatalf("expected openrct2.exe fallback, got %s", p.ManagedHeadlessBinaryForOS("windows"))
 	}

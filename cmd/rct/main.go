@@ -58,16 +58,15 @@ Run 'rct' with no arguments to launch OpenRCT2 directly, pass a park/save/URI
 		DisableFlagParsing: true,
 		FParseErrWhitelist: cobra.FParseErrWhitelist{UnknownFlags: true},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rawArgs := append([]string{"rct"}, args...)
-			if hasStandaloneBoolFlag(rawArgs, "-h", "--help") {
+			if hasStandaloneBoolFlag(args, "-h", "--help") {
 				return cmd.Help()
 			}
-			if hasStandaloneBoolFlag(rawArgs, "-v", "--version") {
+			if hasStandaloneBoolFlag(args, "-v", "--version") {
 				fmt.Fprintf(cmdOut(cmd), "%s version %s\n", cmd.DisplayName(), cmd.Version)
 				return nil
 			}
 
-			target, extraArgs, parsedDryRun, parsedHeadless, err := parseRootArgs(rawArgs)
+			target, extraArgs, parsedDryRun, parsedHeadless, err := parseRootArgs(args)
 			if err != nil {
 				return err
 			}
@@ -115,9 +114,8 @@ Run 'rct' with no arguments to launch OpenRCT2 directly, pass a park/save/URI
 	return rootCmd
 }
 
-func hasStandaloneBoolFlag(rawArgs []string, shortFlag, longFlag string) bool {
-	for i := 1; i < len(rawArgs); i++ {
-		arg := rawArgs[i]
+func hasStandaloneBoolFlag(args []string, shortFlag, longFlag string) bool {
+	for _, arg := range args {
 		if arg == "--" {
 			return false
 		}
@@ -132,16 +130,15 @@ func hasStandaloneBoolFlag(rawArgs []string, shortFlag, longFlag string) bool {
 	return false
 }
 
-func parseRootArgs(rawArgs []string) (string, []string, bool, bool, error) {
+func parseRootArgs(args []string) (string, []string, bool, bool, error) {
 	var target string
 	var extra []string
 	var dryRun, headless bool
 
-	for i := 1; i < len(rawArgs); i++ {
-		arg := rawArgs[i]
+	for i, arg := range args {
 		if arg == "--" {
-			if i+1 < len(rawArgs) {
-				extra = append(extra, rawArgs[i+1:]...)
+			if i+1 < len(args) {
+				extra = append(extra, args[i+1:]...)
 			}
 			break
 		}
@@ -212,4 +209,24 @@ func loadAppState(errOut io.Writer) (*config.Paths, *config.AppConfig, *catalog.
 		fmt.Fprintf(errOut, "warning: %s\n", d.String())
 	}
 	return p, cfg, cat, nil
+}
+
+func resolveTargetChannel(
+	cfg *config.AppConfig,
+	cat *catalog.Catalog,
+	channelFlag string,
+) (string, *catalog.ChannelConfig, error) {
+	effectiveChannel := cfg.EffectiveChannel()
+	if strings.TrimSpace(channelFlag) != "" {
+		norm, err := config.NormalizeChannel(channelFlag)
+		if err != nil {
+			return "", nil, err
+		}
+		effectiveChannel = norm
+	}
+	chCfg := cat.FindChannel(effectiveChannel)
+	if chCfg == nil {
+		return "", nil, fmt.Errorf("channel %q not found in catalog", effectiveChannel)
+	}
+	return effectiveChannel, chCfg, nil
 }

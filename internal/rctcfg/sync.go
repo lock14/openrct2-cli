@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,6 +13,8 @@ import (
 	"github.com/lock14/openrct2-cli/internal/config"
 	"github.com/lock14/openrct2-cli/internal/fsutil"
 )
+
+const maxDisplayedDiffLines = 20
 
 var reDesktopExec = regexp.MustCompile(`(?m)^Exec=.*$`)
 
@@ -70,6 +73,76 @@ func DiffConfigs(paths *config.Paths, opts RenderOptions, targetOS string, out i
 	return nil
 }
 
+type diffEdit struct {
+	op   byte // '-' expected-only, '+' actual-only
+	line string
+}
+
+// computeLineDiff computes a minimal LCS-based line diff when sizes are modest,
+// falling back to positional comparison for huge files.
+func computeLineDiff(expLines, actLines []string) []diffEdit {
+	n, m := len(expLines), len(actLines)
+	if int64(n)*int64(m) > 250_000 {
+		var edits []diffEdit
+		limit := max(n, m)
+		for i := range limit {
+			var e, a string
+			if i < n {
+				e = expLines[i]
+			}
+			if i < m {
+				a = actLines[i]
+			}
+			if e != a {
+				if e != "" {
+					edits = append(edits, diffEdit{op: '-', line: e})
+				}
+				if a != "" {
+					edits = append(edits, diffEdit{op: '+', line: a})
+				}
+			}
+		}
+		return edits
+	}
+
+	dp := make([][]int, n+1)
+	for i := range dp {
+		dp[i] = make([]int, m+1)
+	}
+	for i := n - 1; i >= 0; i-- {
+		for j := m - 1; j >= 0; j-- {
+			if expLines[i] == actLines[j] {
+				dp[i][j] = dp[i+1][j+1] + 1
+			} else {
+				dp[i][j] = max(dp[i+1][j], dp[i][j+1])
+			}
+		}
+	}
+
+	var edits []diffEdit
+	i, j := 0, 0
+	for i < n && j < m {
+		switch {
+		case expLines[i] == actLines[j]:
+			i++
+			j++
+		case dp[i+1][j] >= dp[i][j+1]:
+			edits = append(edits, diffEdit{op: '-', line: expLines[i]})
+			i++
+		default:
+			edits = append(edits, diffEdit{op: '+', line: actLines[j]})
+			j++
+		}
+	}
+	for ; i < n; i++ {
+		edits = append(edits, diffEdit{op: '-', line: expLines[i]})
+	}
+	for ; j < m; j++ {
+		edits = append(edits, diffEdit{op: '+', line: actLines[j]})
+	}
+	return edits
+}
+
 func printLineDiff(title, expected, diskPath string, out io.Writer) {
 	diskData, err := os.ReadFile(diskPath)
 	if err != nil {
@@ -77,41 +150,50 @@ func printLineDiff(title, expected, diskPath string, out io.Writer) {
 		return
 	}
 
-	expLines := strings.Split(strings.TrimSpace(fsutil.NormalizeLF(expected)), "\n")
-	actLines := strings.Split(strings.TrimSpace(fsutil.NormalizeLF(string(diskData))), "\n")
-
-	diffCount := 0
-	maxLines := len(expLines)
-	if len(actLines) > maxLines {
-		maxLines = len(actLines)
-	}
-
-	for i := 0; i < maxLines; i++ {
-		var expLine, actLine string
-		if i < len(expLines) {
-			expLine = expLines[i]
-		}
-		if i < len(actLines) {
-			actLine = actLines[i]
-		}
-		if expLine != actLine {
-			diffCount++
-			if diffCount <= 20 {
-				if expLine != "" {
-					fmt.Fprintf(out, "- %s\n", expLine)
-				}
-				if actLine != "" {
-					fmt.Fprintf(out, "+ %s\n", actLine)
-				}
-			}
-		}
-	}
-
-	if diffCount == 0 {
+	expText := strings.TrimSpace(fsutil.NormalizeLF(expected))
+	actText := strings.TrimSpace(fsutil.NormalizeLF(string(diskData)))
+	if expText == actText {
 		fmt.Fprintf(out, "✓ %s is in sync with system (%s)\n", title, diskPath)
-	} else if diffCount > 20 {
-		fmt.Fprintf(out, "... and %d more line differences\n", diffCount-20)
+		return
 	}
+
+	edits := computeLineDiff(strings.Split(expText, "\n"), strings.Split(actText, "\n"))
+	for i, edit := range edits {
+		if i >= maxDisplayedDiffLines {
+			break
+		}
+		fmt.Fprintf(out, "%c %s\n", edit.op, edit.line)
+	}
+	if len(edits) > maxDisplayedDiffLines {
+		fmt.Fprintf(out, "... and %d more line differences\n", len(edits)-maxDisplayedDiffLines)
+	}
+}
+
+func syncTemplateFile(
+	livePath, repoDest string,
+	transform func(string) string,
+	out io.Writer,
+) error {
+	data, err := os.ReadFile(livePath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("reading %s: %w", livePath, err)
+	}
+	if fi, statErr := os.Stat(filepath.Dir(repoDest)); statErr != nil || !fi.IsDir() {
+		return nil
+	}
+	content := string(data)
+	if transform != nil {
+		content = transform(content)
+	}
+	if _, _, err := fsutil.WriteTextAtomicIfChanged(repoDest, content, 0o644); err != nil {
+		return err
+	}
+	fsutil.RemoveBackups(repoDest)
+	fmt.Fprintf(out, "✓ Synced %s -> %s\n", livePath, repoDest)
+	return nil
 }
 
 // SyncConfigs pulls live in-game tweaks from the system back into repository templates,
@@ -127,49 +209,39 @@ func SyncConfigs(paths *config.Paths, repoDir, targetOS string, out io.Writer) e
 		repoDir = "."
 	}
 
-	// 1. Sync config.ini
-	liveConfig := filepath.Join(paths.OpenRCT2Dir, "config.ini")
-	repoConfig := filepath.Join(repoDir, "configs", "openrct2", "config.ini")
-	if data, err := os.ReadFile(liveConfig); err == nil {
-		if _, statErr := os.Stat(filepath.Dir(repoConfig)); statErr == nil {
-			sanitized := SanitizeConfigINI(string(data))
-			if _, _, wErr := fsutil.WriteTextAtomicIfChanged(repoConfig, sanitized, 0o644); wErr != nil {
-				return wErr
-			}
-			fsutil.RemoveBackups(repoConfig)
-			fmt.Fprintf(out, "✓ Synced %s -> %s\n", liveConfig, repoConfig)
-		}
+	openrct2TemplateDir := filepath.Join(repoDir, "configs", "openrct2")
+	if fi, err := os.Stat(openrct2TemplateDir); err != nil || !fi.IsDir() {
+		return fmt.Errorf("repository template directory %s not found", openrct2TemplateDir)
 	}
 
-	// 2. Sync shortcuts.json
-	liveShortcuts := filepath.Join(paths.OpenRCT2Dir, "shortcuts.json")
-	repoShortcuts := filepath.Join(repoDir, "configs", "openrct2", "shortcuts.json")
-	if data, err := os.ReadFile(liveShortcuts); err == nil {
-		if _, statErr := os.Stat(filepath.Dir(repoShortcuts)); statErr == nil {
-			if _, _, wErr := fsutil.WriteTextAtomicIfChanged(repoShortcuts, string(data), 0o644); wErr != nil {
-				return wErr
-			}
-			fsutil.RemoveBackups(repoShortcuts)
-			fmt.Fprintf(out, "✓ Synced %s -> %s\n", liveShortcuts, repoShortcuts)
-		}
+	if err := syncTemplateFile(
+		filepath.Join(paths.OpenRCT2Dir, "config.ini"),
+		filepath.Join(openrct2TemplateDir, "config.ini"),
+		SanitizeConfigINI,
+		out,
+	); err != nil {
+		return err
 	}
 
-	// 3. Sync OpenRCT2.desktop on Linux
+	if err := syncTemplateFile(
+		filepath.Join(paths.OpenRCT2Dir, "shortcuts.json"),
+		filepath.Join(openrct2TemplateDir, "shortcuts.json"),
+		nil,
+		out,
+	); err != nil {
+		return err
+	}
+
 	if targetOS == "linux" && paths.DesktopDir != "" {
-		liveDesktop := filepath.Join(paths.DesktopDir, "OpenRCT2.desktop")
-		repoDesktop := filepath.Join(repoDir, "configs", "desktop", "OpenRCT2.desktop")
-		if data, err := os.ReadFile(liveDesktop); err == nil {
-			if _, statErr := os.Stat(filepath.Dir(repoDesktop)); statErr == nil {
-				sanitized := reDesktopExec.ReplaceAllString(
-					fsutil.NormalizeLF(string(data)),
-					"Exec=__OPENRCT2_EXEC__ %u",
-				)
-				if _, _, wErr := fsutil.WriteTextAtomicIfChanged(repoDesktop, sanitized, 0o644); wErr != nil {
-					return wErr
-				}
-				fsutil.RemoveBackups(repoDesktop)
-				fmt.Fprintf(out, "✓ Synced %s -> %s\n", liveDesktop, repoDesktop)
-			}
+		if err := syncTemplateFile(
+			filepath.Join(paths.DesktopDir, "OpenRCT2.desktop"),
+			filepath.Join(repoDir, "configs", "desktop", "OpenRCT2.desktop"),
+			func(raw string) string {
+				return reDesktopExec.ReplaceAllString(fsutil.NormalizeLF(raw), "Exec=__OPENRCT2_EXEC__ %u")
+			},
+			out,
+		); err != nil {
+			return err
 		}
 	}
 
@@ -198,9 +270,8 @@ func SanitizeConfigINI(raw string) string {
 }
 
 // Uninstall removes deployed OpenRCT2 configuration files, shortcuts, and Linux desktop/icon files
-// while preserving user saves, scenarios, tracks, and screenshots. When removeEngine is true,
-// managed engine binaries and receipts are also removed.
-func Uninstall(paths *config.Paths, removeEngine bool, targetOS string, out io.Writer) error {
+// while preserving user saves, scenarios, tracks, and screenshots.
+func Uninstall(paths *config.Paths, targetOS string, out io.Writer) error {
 	if paths == nil {
 		return errors.New("nil configuration paths")
 	}
@@ -230,39 +301,10 @@ func Uninstall(paths *config.Paths, removeEngine bool, targetOS string, out io.W
 	for _, t := range targets {
 		if err := os.Remove(t); err == nil {
 			fmt.Fprintf(out, "✓ Removed %s\n", t)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("removing %s: %w", t, err)
 		}
 		fsutil.RemoveBackups(t)
-	}
-
-	if removeEngine {
-		binPath := paths.ManagedEngineBinaryForOS(targetOS)
-		if binPath != "" {
-			if err := os.Remove(binPath); err == nil {
-				fmt.Fprintf(out, "✓ Removed engine binary %s\n", binPath)
-			}
-			fsutil.RemoveBackups(binPath)
-		}
-		if targetOS == "darwin" && strings.HasSuffix(paths.EngineDir, "OpenRCT2.app") {
-			if _, err := os.Stat(paths.EngineDir); err == nil {
-				_ = os.RemoveAll(paths.EngineDir)
-				fmt.Fprintf(out, "✓ Removed app bundle %s\n", paths.EngineDir)
-			}
-		} else if targetOS == "windows" && paths.EngineDir != "" {
-			if _, err := os.Stat(paths.EngineDir); err == nil {
-				_ = os.RemoveAll(paths.EngineDir)
-				fmt.Fprintf(out, "✓ Removed engine bundle %s\n", paths.EngineDir)
-			}
-			shim := filepath.Join(paths.BinDir, "openrct2.cmd")
-			_ = os.Remove(shim)
-		} else if paths.EngineDir != "" && filepath.Clean(paths.EngineDir) != filepath.Clean(paths.BinDir) {
-			if _, err := os.Stat(paths.EngineDir); err == nil {
-				_ = os.RemoveAll(paths.EngineDir)
-				fmt.Fprintf(out, "✓ Removed engine directory %s\n", paths.EngineDir)
-			}
-		}
-		if paths.EngineReceiptFile != "" {
-			_ = os.Remove(paths.EngineReceiptFile)
-		}
 	}
 
 	if targetOS == "linux" {

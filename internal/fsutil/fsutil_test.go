@@ -1,8 +1,12 @@
 package fsutil
 
 import (
+	"archive/zip"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -75,6 +79,40 @@ func TestWriteFileAtomicIfChangedIdempotency(t *testing.T) {
 	}
 }
 
+func TestJSONHelpersAndUTF8BOM(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+
+	var dst map[string]string
+	ok, err := ReadJSONFile(path, &dst)
+	if err != nil || ok {
+		t.Fatalf("missing ReadJSONFile = (%v, %v), want (false, nil)", ok, err)
+	}
+
+	changed, _, err := WriteJSONAtomicIfChanged(path, map[string]string{"url": "https://a&b"}, 0o644)
+	if err != nil || !changed {
+		t.Fatalf("WriteJSONAtomicIfChanged = (%v, %v)", changed, err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `\u0026`) {
+		t.Fatalf("expected unescaped '&' in JSON, got %s", string(raw))
+	}
+
+	// Prepend UTF-8 BOM and verify ReadJSONFile strips it cleanly
+	bomData := append([]byte("\xef\xbb\xbf"), raw...)
+	if err := os.WriteFile(path, bomData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ok, err = ReadJSONFile(path, &dst)
+	if err != nil || !ok || dst["url"] != "https://a&b" {
+		t.Fatalf("BOM ReadJSONFile = (%v, %v, %v)", ok, err, dst)
+	}
+}
+
 func TestWriteTextAtomicIfChangedCRLF(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -90,7 +128,7 @@ func TestWriteTextAtomicIfChangedCRLF(t *testing.T) {
 	}
 }
 
-func TestSymlinkReplacementSkipsTargetBackup(t *testing.T) {
+func TestSymlinkAtomicAndReplacementSkipsTargetBackup(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink test on unix")
 	}
@@ -101,8 +139,11 @@ func TestSymlinkReplacementSkipsTargetBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 	linkPath := filepath.Join(dir, "openrct2")
-	if err := os.Symlink(extTarget, linkPath); err != nil {
-		t.Fatal(err)
+	if err := WriteSymlinkAtomic(linkPath, extTarget); err != nil {
+		t.Fatalf("WriteSymlinkAtomic initial: %v", err)
+	}
+	if err := WriteSymlinkAtomic(linkPath, extTarget); err != nil {
+		t.Fatalf("WriteSymlinkAtomic replace: %v", err)
 	}
 
 	changed, bkp, err := WriteFileAtomicIfChanged(linkPath, []byte("new-binary"), 0o755)
@@ -118,7 +159,7 @@ func TestSymlinkReplacementSkipsTargetBackup(t *testing.T) {
 	}
 }
 
-func TestCleanRelAndSafeJoin(t *testing.T) {
+func TestCleanRelSafeJoinAndSHA256Validation(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 
@@ -132,6 +173,7 @@ func TestCleanRelAndSafeJoin(t *testing.T) {
 	}
 	for _, tc := range valid {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := CleanRel(tc.rel)
 			if err != nil || got != tc.want {
 				t.Fatalf("CleanRel(%q) = (%q, %v), want (%q, nil)", tc.rel, got, err, tc.want)
@@ -159,6 +201,81 @@ func TestCleanRelAndSafeJoin(t *testing.T) {
 			t.Errorf("SafeJoin(%q) expected error, got nil", rel)
 		}
 	}
+
+	upper := strings.Repeat("AB", 32)
+	norm, err := ValidateSHA256Hex(upper)
+	if err != nil || norm != strings.ToLower(upper) {
+		t.Fatalf("ValidateSHA256Hex(valid) = (%q, %v)", norm, err)
+	}
+	if _, err := ValidateSHA256Hex("not-hex"); err == nil {
+		t.Fatal("expected ValidateSHA256Hex error on malformed hash")
+	}
+}
+
+func TestExtractZipBoundsAndJailing(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write([]byte("0123456789"))
+	}
+	_ = zw.Close()
+
+	zipPath := filepath.Join(t.TempDir(), "sample.zip")
+	if err := os.WriteFile(zipPath, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reject multi-entry archive exceeding MaxTotalBytes
+	if _, err := ExtractZip(zipPath, t.TempDir(), ExtractZipOptions{MaxTotalBytes: 20}); err == nil {
+		t.Fatal("expected total byte limit error across multiple archive entries")
+	}
+	// Reject archive exceeding MaxEntries
+	if _, err := ExtractZip(zipPath, t.TempDir(), ExtractZipOptions{MaxEntries: 2}); err == nil {
+		t.Fatal("expected max entries limit error")
+	}
+	// Succeed within bounds
+	files, err := ExtractZip(zipPath, t.TempDir(), ExtractZipOptions{MaxTotalBytes: 100, MaxEntries: 10})
+	if err != nil || len(files) != 3 {
+		t.Fatalf("ExtractZip valid = (%v, %v)", files, err)
+	}
+
+	// Verify CopyFileAtomic creates target and backs up on update
+	srcFile := filepath.Join(t.TempDir(), "src.bin")
+	dstFile := filepath.Join(t.TempDir(), "dst.bin")
+	_ = os.WriteFile(srcFile, []byte("payload-1"), 0o644)
+	if bkp, err := CopyFileAtomic(srcFile, dstFile, 0o644); err != nil || bkp != "" {
+		t.Fatalf("CopyFileAtomic initial = (%q, %v)", bkp, err)
+	}
+	_ = os.WriteFile(srcFile, []byte("payload-2"), 0o644)
+	if bkp, err := CopyFileAtomic(srcFile, dstFile, 0o644); err != nil || bkp == "" {
+		t.Fatalf("CopyFileAtomic update = (%q, %v)", bkp, err)
+	}
+
+	// Verify symlink entries are rejected by default and escape symlinks are rejected even when enabled
+	if runtime.GOOS != "windows" {
+		var symBuf bytes.Buffer
+		szw := zip.NewWriter(&symBuf)
+		hdr := &zip.FileHeader{Name: "escape-link"}
+		hdr.SetMode(os.ModeSymlink | 0o777)
+		sw, _ := szw.CreateHeader(hdr)
+		_, _ = sw.Write([]byte("../../outside"))
+		_ = szw.Close()
+
+		symZip := filepath.Join(t.TempDir(), "sym.zip")
+		_ = os.WriteFile(symZip, symBuf.Bytes(), 0o644)
+		if _, err := ExtractZip(symZip, t.TempDir(), ExtractZipOptions{AllowBundleSymlinks: false}); err == nil {
+			t.Fatal("expected symlink rejected when AllowBundleSymlinks is false")
+		}
+		if _, err := ExtractZip(symZip, t.TempDir(), ExtractZipOptions{AllowBundleSymlinks: true}); err == nil {
+			t.Fatal("expected escaping bundle symlink rejected")
+		}
+	}
 }
 
 func TestDownloadVerifiedContext(t *testing.T) {
@@ -179,14 +296,14 @@ func TestDownloadVerifiedContext(t *testing.T) {
 	dir := t.TempDir()
 	dest := filepath.Join(dir, "plugin.js")
 
-	if _, err := DownloadVerified(srv.Client(), srv.URL, dest, "0000", 0o644); err == nil {
+	if _, err := DownloadVerifiedContext(t.Context(), srv.Client(), srv.URL, dest, "0000", 0o644); err == nil {
 		t.Fatal("expected sha256 mismatch error")
 	}
-	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+	if _, err := os.Stat(dest); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal("corrupt download should not create destination file")
 	}
 
-	n, err := DownloadVerified(srv.Client(), srv.URL, dest, hexSum, 0o644)
+	n, err := DownloadVerifiedContext(t.Context(), srv.Client(), srv.URL, dest, hexSum, 0o644)
 	if err != nil {
 		t.Fatalf("DownloadVerified valid: %v", err)
 	}
@@ -199,7 +316,7 @@ func TestDownloadVerifiedContext(t *testing.T) {
 	if _, _, err := WriteLimitedReaderAtomic(limitedDest, strings.NewReader("0123456789"), 4, 0o644); err == nil {
 		t.Fatal("expected size limit error")
 	}
-	if _, err := os.Stat(limitedDest); !os.IsNotExist(err) {
+	if _, err := os.Stat(limitedDest); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal("oversized write should not create target")
 	}
 }
