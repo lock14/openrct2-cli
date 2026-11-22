@@ -1,6 +1,7 @@
 package rctcfg
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	openrct2cli "github.com/lock14/openrct2-cli"
 	"github.com/lock14/openrct2-cli/internal/config"
@@ -18,6 +20,8 @@ import (
 	"github.com/lock14/openrct2-cli/internal/fsutil"
 	"github.com/lock14/openrct2-cli/internal/gamedata"
 )
+
+const desktopCacheTimeout = 5 * time.Second
 
 // RenderOptions holds machine-specific runtime values substituted into embedded templates.
 type RenderOptions struct {
@@ -119,9 +123,44 @@ const (
 	ComponentShortcuts DeployComponent = "shortcuts"
 	// ComponentDesktop deploys only OpenRCT2.desktop (Linux).
 	ComponentDesktop DeployComponent = "desktop"
-	// ComponentIcons deploys only XDG and hicolor PNG icons (Linux).
+	// ComponentIcons deploys only hicolor PNG icons (Linux).
 	ComponentIcons DeployComponent = "icons"
 )
+
+// ValidDeployComponents returns the canonical names accepted for --only component selection.
+func ValidDeployComponents() []string {
+	return []string{
+		string(ComponentAll),
+		string(ComponentConfigs),
+		string(ComponentConfig),
+		string(ComponentShortcuts),
+		string(ComponentDesktop),
+		string(ComponentIcons),
+	}
+}
+
+// ParseDeployComponent validates and normalizes a user-supplied deployment component selector.
+func ParseDeployComponent(raw string) (DeployComponent, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "all":
+		return ComponentAll, nil
+	case "configs":
+		return ComponentConfigs, nil
+	case "config", "ini":
+		return ComponentConfig, nil
+	case "shortcuts", "keys":
+		return ComponentShortcuts, nil
+	case "desktop":
+		return ComponentDesktop, nil
+	case "icons", "icon":
+		return ComponentIcons, nil
+	default:
+		return "", fmt.Errorf(
+			"invalid --only component %q (expected all, configs, config, shortcuts, desktop, or icons)",
+			raw,
+		)
+	}
+}
 
 // DeployOptions configures OpenRCT2 configuration and desktop deployment.
 type DeployOptions struct {
@@ -161,7 +200,7 @@ func UpdateConfigGamePaths(paths *config.Paths, rct2Path, rct1Path string, out i
 	dest := filepath.Join(paths.OpenRCT2Dir, "config.ini")
 	existingBytes, err := os.ReadFile(dest)
 	if err != nil {
-		if !os.IsNotExist(err) {
+		if !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
 		rendered, renderErr := RenderConfigINI(RenderOptions{
@@ -240,7 +279,7 @@ func Deploy(paths *config.Paths, opts DeployOptions, out io.Writer) error {
 		}
 	}
 	if wantShortcuts {
-		if err := deployShortcuts(paths, opts.Force, out); err != nil {
+		if err := deployShortcuts(paths, out); err != nil {
 			return err
 		}
 	}
@@ -325,44 +364,28 @@ func deployConfigINI(paths *config.Paths, opts DeployOptions, out io.Writer) err
 	return nil
 }
 
-func deployShortcuts(paths *config.Paths, force bool, out io.Writer) error {
-	dest := filepath.Join(paths.OpenRCT2Dir, "shortcuts.json")
-	if !force {
-		if _, err := os.Stat(dest); err == nil {
-			raw, readErr := RenderShortcutsJSON()
-			if readErr == nil {
-				changed, bkp, wErr := fsutil.WriteTextAtomicIfChanged(dest, string(raw), 0o644)
-				if wErr != nil {
-					return wErr
-				}
-				if !changed {
-					fmt.Fprintf(out, "✓ shortcuts.json already up to date -> %s\n", dest)
-					return nil
-				}
-				if bkp != "" {
-					fmt.Fprintf(out, "  Backed up existing shortcuts.json -> %s\n", filepath.Base(bkp))
-				}
-				fmt.Fprintf(out, "✓ Installed shortcuts.json -> %s\n", dest)
-				return nil
-			}
-		}
+func reportAssetDeploy(out io.Writer, label, backupLabel, dest, bkp string, changed bool) {
+	if bkp != "" {
+		fmt.Fprintf(out, "  Backed up existing %s -> %s\n", backupLabel, filepath.Base(bkp))
 	}
+	if changed {
+		fmt.Fprintf(out, "✓ Installed %s -> %s\n", label, dest)
+	} else {
+		fmt.Fprintf(out, "✓ %s already up to date -> %s\n", label, dest)
+	}
+}
+
+func deployShortcuts(paths *config.Paths, out io.Writer) error {
 	raw, err := RenderShortcutsJSON()
 	if err != nil {
 		return err
 	}
+	dest := filepath.Join(paths.OpenRCT2Dir, "shortcuts.json")
 	changed, bkp, err := fsutil.WriteTextAtomicIfChanged(dest, string(raw), 0o644)
 	if err != nil {
 		return err
 	}
-	if bkp != "" {
-		fmt.Fprintf(out, "  Backed up existing shortcuts.json -> %s\n", filepath.Base(bkp))
-	}
-	if changed {
-		fmt.Fprintf(out, "✓ Installed shortcuts.json -> %s\n", dest)
-	} else {
-		fmt.Fprintf(out, "✓ shortcuts.json already up to date -> %s\n", dest)
-	}
+	reportAssetDeploy(out, "shortcuts.json", "shortcuts.json", dest, bkp, changed)
 	return nil
 }
 
@@ -379,14 +402,7 @@ func deployDesktopFile(paths *config.Paths, execPath string, out io.Writer) erro
 	if err != nil {
 		return err
 	}
-	if bkp != "" {
-		fmt.Fprintf(out, "  Backed up existing OpenRCT2.desktop -> %s\n", filepath.Base(bkp))
-	}
-	if changed {
-		fmt.Fprintf(out, "✓ Installed OpenRCT2.desktop -> %s\n", dest)
-	} else {
-		fmt.Fprintf(out, "✓ OpenRCT2.desktop already up to date -> %s\n", dest)
-	}
+	reportAssetDeploy(out, "OpenRCT2.desktop", "OpenRCT2.desktop", dest, bkp, changed)
 	return nil
 }
 
@@ -398,33 +414,31 @@ func deployIcons(paths *config.Paths, out io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("reading embedded openrct2.png: %w", err)
 	}
-
 	dst := filepath.Join(paths.HicolorIconDir, "openrct2.png")
 	changed, bkp, wErr := fsutil.WriteFileAtomicIfChanged(dst, iconBytes, 0o644)
 	if wErr != nil {
 		return wErr
 	}
-	if bkp != "" {
-		fmt.Fprintf(out, "  Backed up existing icon -> %s\n", filepath.Base(bkp))
-	}
-	if changed {
-		fmt.Fprintf(out, "✓ Installed OpenRCT2 icon -> %s\n", dst)
-	} else {
-		fmt.Fprintf(out, "✓ OpenRCT2 icon already up to date -> %s\n", dst)
-	}
+	reportAssetDeploy(out, "OpenRCT2 icon", "icon", dst, bkp, changed)
 	return nil
+}
+
+func runBoundedCommand(name string, args ...string) {
+	bin, err := exec.LookPath(name)
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), desktopCacheTimeout)
+	defer cancel()
+	_ = exec.CommandContext(ctx, bin, args...).Run()
 }
 
 func refreshDesktopCaches(paths *config.Paths) {
 	if paths.DesktopDir != "" {
-		if bin, err := exec.LookPath("update-desktop-database"); err == nil {
-			_ = exec.Command(bin, paths.DesktopDir).Run()
-		}
+		runBoundedCommand("update-desktop-database", paths.DesktopDir)
 	}
 	if paths.IconDir != "" {
 		hicolorRoot := filepath.Join(paths.IconDir, "hicolor")
-		if bin, err := exec.LookPath("gtk-update-icon-cache"); err == nil {
-			_ = exec.Command(bin, "-q", "-t", hicolorRoot).Run()
-		}
+		runBoundedCommand("gtk-update-icon-cache", "-q", "-t", hicolorRoot)
 	}
 }

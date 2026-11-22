@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"runtime"
 	"strings"
 
@@ -52,7 +51,10 @@ func runEngineStatus(cmd *cobra.Command, _ []string) error {
 	chCfg := cat.FindChannel(activeChannel)
 	managedBin := paths.ManagedEngineBinaryForOS(runtime.GOOS)
 	resolvedBin, resolveErr := engine.ResolveBinary(paths, false, runtime.GOOS)
-	rec, _ := engine.LoadReceipt(paths.EngineReceiptFile)
+	rec, recErr := engine.LoadReceipt(paths.EngineReceiptFile)
+	if recErr != nil {
+		fmt.Fprintf(errOut, "Warning: could not parse engine receipt %s: %v\n", paths.EngineReceiptFile, recErr)
+	}
 
 	status := "[✗ Missing]"
 	if resolveErr == nil {
@@ -70,10 +72,8 @@ func runEngineStatus(cmd *cobra.Command, _ []string) error {
 	if resolveErr == nil && resolvedBin != managedBin {
 		fmt.Fprintf(out, "Active Binary:  %s (system fallback)\n", resolvedBin)
 	}
-	if rec != nil {
-		if fi, statErr := os.Stat(rec.BinaryPath); statErr == nil && !fi.IsDir() {
-			fmt.Fprintf(out, "Installed Tag:  %s (channel: %s, installed: %s)\n", rec.Tag, rec.Channel, rec.InstalledAt)
-		}
+	if rec != nil && engine.IsBinaryReady(rec.BinaryPath) {
+		fmt.Fprintf(out, "Installed Tag:  %s (channel: %s, installed: %s)\n", rec.Tag, rec.Channel, rec.InstalledAt)
 	}
 	return nil
 }
@@ -93,6 +93,7 @@ func newEngineInstallCmd() *cobra.Command {
 	}
 	installCmd.Flags().StringVar(&channelFlag, "channel", "", "Channel to install (release or develop)")
 	installCmd.Flags().BoolVar(&force, "force", false, "Force re-download even if already installed")
+	registerChannelFlagCompletion(installCmd, "channel")
 	return installCmd
 }
 
@@ -111,6 +112,7 @@ func newEngineUpdateCmd() *cobra.Command {
 	}
 	updateCmd.Flags().StringVar(&channelFlag, "channel", "", "Channel to update (release or develop)")
 	updateCmd.Flags().BoolVar(&force, "force", false, "Force re-download even if receipt matches upstream")
+	registerChannelFlagCompletion(updateCmd, "channel")
 	return updateCmd
 }
 
@@ -122,18 +124,9 @@ func executeEngineInstall(cmd *cobra.Command, channelFlag string, force, checkUp
 		return err
 	}
 
-	effectiveChannel := cfg.EffectiveChannel()
-	if strings.TrimSpace(channelFlag) != "" {
-		norm, chErr := config.NormalizeChannel(channelFlag)
-		if chErr != nil {
-			return chErr
-		}
-		effectiveChannel = norm
-	}
-
-	chCfg := cat.FindChannel(effectiveChannel)
-	if chCfg == nil {
-		return fmt.Errorf("channel %q not found in catalog", effectiveChannel)
+	effectiveChannel, chCfg, err := resolveTargetChannel(cfg, cat, channelFlag)
+	if err != nil {
+		return err
 	}
 
 	ins := engine.NewInstaller(paths, out)
@@ -155,7 +148,7 @@ func newEngineChannelCmd() *cobra.Command {
 	chCmd := &cobra.Command{
 		Use:       "channel [release|develop]",
 		Short:     "Show or switch the active OpenRCT2 release channel",
-		ValidArgs: []string{"release", "develop"},
+		ValidArgs: []string{config.ChannelRelease, config.ChannelDevelop},
 		Args:      cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cmdOut(cmd)
@@ -170,13 +163,9 @@ func newEngineChannelCmd() *cobra.Command {
 				return nil
 			}
 
-			norm, err := config.NormalizeChannel(args[0])
+			norm, chCfg, err := resolveTargetChannel(cfg, cat, args[0])
 			if err != nil {
 				return err
-			}
-			chCfg := cat.FindChannel(norm)
-			if chCfg == nil {
-				return fmt.Errorf("channel %q not found in catalog", norm)
 			}
 
 			cfg.Channel = norm

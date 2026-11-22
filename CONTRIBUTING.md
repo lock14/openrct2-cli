@@ -40,7 +40,7 @@ make check
 | `internal/content/` | Verified downloader and `os.OpenRoot` extractor for `.parkap`, `.parkobj`, `.parkseq`, and `.js` |
 | `internal/display/` | Native display resolution detection and HiDPI `window_scale` calculation |
 | `internal/engine/` | GitHub Releases installer (`release` and `develop`), `.app`/`.zip` extractor, and launcher |
-| `internal/fsutil/` | Atomic file writes, idempotent timestamped backups, SHA-256 downloads, and `SafeJoin` |
+| `internal/fsutil/` | Atomic file/JSON/symlink writes, idempotent backups, bounded `os.OpenRoot` ZIP extraction, and SHA-256 downloads |
 | `internal/gamedata/` | Steam `libraryfolders.vdf` parser and case-insensitive RCT2/Classic/RCT1 asset validators |
 | `internal/rctcfg/` | Non-clobbering INI editor, template renderer, FreeDesktop deployer, diff, and reverse sync |
 | `internal/repolint/` | Catalog, template, documentation, and `README.md` table parity linter |
@@ -111,5 +111,5 @@ make check
 * Write all command output through `cmd.OutOrStdout()` and diagnostics through `cmd.ErrOrStderr()` so CLI commands are
   testable in-memory without subprocesses.
 * Never perform unverified HTTP downloads or unjailed ZIP extractions; route downloads through
-  `fsutil.DownloadVerifiedContext` and archive extraction through `os.OpenRoot` plus `fsutil.CleanRel`.
+  `fsutil.DownloadVerifiedContext` and archive extraction through `fsutil.ExtractZip` / `fsutil.ExtractZipFiles`.
 * Add table-driven unit tests alongside any new or modified package behavior using `t.TempDir()` and `httptest.Server`.

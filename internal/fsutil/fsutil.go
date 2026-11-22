@@ -1,20 +1,20 @@
 // Package fsutil provides hardened filesystem helpers for atomic writes,
-// idempotent non-destructive timestamped backups, verified HTTP downloads,
-// and traversal-safe relative path joins.
+// idempotent non-destructive timestamped backups, JSON persistence, verified
+// HTTP downloads, jailed ZIP extraction, and traversal-safe path joins.
 package fsutil
 
 import (
 	"bytes"
-	"context"
-	"crypto/sha256"
+	"cmp"
+	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -23,48 +23,25 @@ import (
 // MaxBackupsPerFile is the maximum number of timestamped backup files retained per target file.
 const MaxBackupsPerFile = 3
 
-// MaxDownloadBytes is the maximum payload size (2 GiB) accepted by DownloadVerified.
+// MaxDownloadBytes is the maximum payload size (2 GiB) accepted by DownloadVerifiedContext.
 const MaxDownloadBytes int64 = 2 << 30
 
 // MaxExtractFileBytes is the maximum decompressed size (2 GiB) accepted per archive entry.
 const MaxExtractFileBytes int64 = 2 << 30
 
-// UserAgent is the HTTP User-Agent header sent on all outbound downloads.
+// MaxExtractTotalBytes is the maximum total decompressed bytes (8 GiB) accepted per archive.
+const MaxExtractTotalBytes int64 = 8 << 30
+
+// MaxZipEntries is the maximum number of entries accepted when extracting a ZIP archive.
+const MaxZipEntries = 16384
+
+// UserAgent is the HTTP User-Agent header sent on all outbound requests.
 const UserAgent = "openrct2-cli/1.0"
-
-var windowsReservedNames = map[string]bool{
-	"CON": true, "PRN": true, "AUX": true, "NUL": true,
-	"COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true,
-	"COM6": true, "COM7": true, "COM8": true, "COM9": true,
-	"LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true,
-	"LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
-}
-
-func isWindowsReservedSegment(part string) bool {
-	stem := part
-	if dot := strings.IndexByte(stem, '.'); dot >= 0 {
-		stem = stem[:dot]
-	}
-	stem = strings.ToUpper(strings.TrimSpace(stem))
-	return windowsReservedNames[stem]
-}
-
-// BackupFile creates a non-destructive timestamped backup (.bak.<YYYYMMDDHHMMSS>)
-// if path already exists as a regular file, pruning older backup siblings so at most
-// MaxBackupsPerFile backups are retained. Symlinks and missing files return ("", nil).
-func BackupFile(path string) (string, error) {
-	backupPath, err := createBackupUnpruned(path)
-	if err != nil || backupPath == "" {
-		return backupPath, err
-	}
-	pruneBackups(path, MaxBackupsPerFile)
-	return backupPath, nil
-}
 
 func createBackupUnpruned(path string) (string, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return "", nil
 		}
 		return "", err
@@ -107,8 +84,7 @@ func nextBackupPath(path, ts string) string {
 			}
 			continue
 		}
-		if strings.HasPrefix(name, baseName+"-") {
-			suffix := strings.TrimPrefix(name, baseName+"-")
+		if suffix, ok := strings.CutPrefix(name, baseName+"-"); ok {
 			if seq, convErr := strconv.Atoi(suffix); convErr == nil && seq > maxSeq {
 				maxSeq = seq
 			}
@@ -138,13 +114,16 @@ func pruneBackups(path string, keep int) {
 	}
 	var backups []backupEntry
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) {
+		if entry.IsDir() {
 			continue
 		}
-		suffix := strings.TrimPrefix(entry.Name(), prefix)
+		suffix, ok := strings.CutPrefix(entry.Name(), prefix)
+		if !ok {
+			continue
+		}
 		tsPart := suffix
 		seq := 0
-		if before, after, ok := strings.Cut(suffix, "-"); ok {
+		if before, after, hasDash := strings.Cut(suffix, "-"); hasDash {
 			if parsed, convErr := strconv.Atoi(after); convErr == nil {
 				tsPart = before
 				seq = parsed
@@ -159,14 +138,12 @@ func pruneBackups(path string, keep int) {
 	if len(backups) <= keep {
 		return
 	}
-	sort.Slice(backups, func(i, j int) bool {
-		if backups[i].ts != backups[j].ts {
-			return backups[i].ts < backups[j].ts
-		}
-		if backups[i].seq != backups[j].seq {
-			return backups[i].seq < backups[j].seq
-		}
-		return backups[i].name < backups[j].name
+	slices.SortFunc(backups, func(a, b backupEntry) int {
+		return cmp.Or(
+			cmp.Compare(a.ts, b.ts),
+			cmp.Compare(a.seq, b.seq),
+			cmp.Compare(a.name, b.name),
+		)
 	})
 	for _, old := range backups[:len(backups)-keep] {
 		_ = os.Remove(filepath.Join(dir, old.name))
@@ -208,9 +185,7 @@ func WriteFileAtomicIfChanged(path string, data []byte, perm os.FileMode) (bool,
 	}
 	if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() {
 		if existing, readErr := os.ReadFile(path); readErr == nil && bytes.Equal(existing, data) {
-			if perm&0o111 != 0 && info.Mode().Perm()&0o111 == 0 {
-				_ = os.Chmod(path, info.Mode().Perm()|(perm&0o111))
-			}
+			ensureExecutableBits(path, info.Mode().Perm(), perm)
 			return false, "", nil
 		}
 	}
@@ -237,9 +212,7 @@ func WriteTextAtomicIfChanged(path, content string, perm os.FileMode) (bool, str
 		if existing, readErr := os.ReadFile(path); readErr == nil {
 			normalizedExisting := strings.TrimRight(NormalizeLF(string(existing)), "\n") + "\n"
 			if normalizedExisting == normalizedNew {
-				if perm&0o111 != 0 && info.Mode().Perm()&0o111 == 0 {
-					_ = os.Chmod(path, info.Mode().Perm()|(perm&0o111))
-				}
+				ensureExecutableBits(path, info.Mode().Perm(), perm)
 				return false, "", nil
 			}
 		}
@@ -249,6 +222,36 @@ func WriteTextAtomicIfChanged(path, content string, perm os.FileMode) (bool, str
 		return false, "", err
 	}
 	return true, bkp, nil
+}
+
+func ensureExecutableBits(path string, currentPerm, desiredPerm os.FileMode) {
+	if desiredPerm&0o111 != 0 && currentPerm&0o111 == 0 {
+		_ = os.Chmod(path, currentPerm|(desiredPerm&0o111))
+	}
+}
+
+// WriteSymlinkAtomic creates or replaces linkDest atomically as a symbolic link
+// pointing to targetPath using a collision-free temporary sibling symlink.
+func WriteSymlinkAtomic(linkDest, targetPath string) error {
+	if strings.TrimSpace(linkDest) == "" {
+		return errors.New("empty symlink destination")
+	}
+	parent := filepath.Dir(linkDest)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return fmt.Errorf("creating directory %s: %w", parent, err)
+	}
+	var rnd [8]byte
+	_, _ = rand.Read(rnd[:])
+	tmpLink := filepath.Join(parent, ".rct-link-"+hex.EncodeToString(rnd[:]))
+	_ = os.Remove(tmpLink)
+	if err := os.Symlink(targetPath, tmpLink); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpLink, linkDest); err != nil {
+		_ = os.Remove(tmpLink)
+		return err
+	}
+	return nil
 }
 
 // WriteReaderAtomic streams r to path atomically via a temporary file in the
@@ -367,151 +370,4 @@ func writeReaderTempAndRename(
 		pruneBackups(path, MaxBackupsPerFile)
 	}
 	return written, backupPath, nil
-}
-
-// CleanRel validates and normalizes a relative path (converting backslashes to
-// forward slashes), rejecting empty strings, NUL bytes, leading slashes, Windows
-// drive-letter prefixes, UNC prefixes, trailing spaces or dots on segments,
-// Windows reserved DOS device names, and any "." or ".." path segments.
-func CleanRel(rel string) (string, error) {
-	if rel == "" {
-		return "", errors.New("empty relative path")
-	}
-	if strings.IndexByte(rel, 0) >= 0 {
-		return "", fmt.Errorf("invalid NUL byte in path %q", rel)
-	}
-	norm := strings.ReplaceAll(rel, "\\", "/")
-	if strings.HasPrefix(norm, "/") {
-		return "", fmt.Errorf("absolute path %q is not allowed", rel)
-	}
-	if len(norm) >= 2 && norm[1] == ':' {
-		return "", fmt.Errorf("drive-letter path %q is not allowed", rel)
-	}
-	parts := strings.Split(norm, "/")
-	cleaned := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if part == "" || part == "." || part == ".." {
-			return "", fmt.Errorf("invalid relative path segment in %q", rel)
-		}
-		if strings.TrimRight(part, " .") != part {
-			return "", fmt.Errorf("trailing space or dot in path segment %q", rel)
-		}
-		if strings.ContainsRune(part, ':') {
-			return "", fmt.Errorf("invalid colon in path segment %q", rel)
-		}
-		if isWindowsReservedSegment(part) {
-			return "", fmt.Errorf("reserved device name in path segment %q", rel)
-		}
-		cleaned = append(cleaned, part)
-	}
-	return strings.Join(cleaned, "/"), nil
-}
-
-// SafeJoin joins a relative path under root after validating it with CleanRel
-// and verifying that the resulting path remains strictly inside root.
-func SafeJoin(root, rel string) (string, error) {
-	if strings.TrimSpace(root) == "" {
-		return "", errors.New("empty root directory")
-	}
-	cleanRel, err := CleanRel(rel)
-	if err != nil {
-		return "", err
-	}
-	cleanRoot := filepath.Clean(root)
-	target := filepath.Clean(filepath.Join(cleanRoot, filepath.FromSlash(cleanRel)))
-	prefix := cleanRoot
-	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
-		prefix += string(filepath.Separator)
-	}
-	if target == cleanRoot || !strings.HasPrefix(target, prefix) {
-		return "", fmt.Errorf("path %q escapes root %q", rel, root)
-	}
-	return target, nil
-}
-
-// DownloadVerified fetches url using client with UserAgent, verifies HTTP 200 OK
-// and optional expectedSHA256 hex digest, and atomically writes to targetPath.
-func DownloadVerified(
-	client *http.Client,
-	url, targetPath, expectedSHA256 string,
-	perm os.FileMode,
-) (int64, error) {
-	return DownloadVerifiedContext(context.Background(), client, url, targetPath, expectedSHA256, perm)
-}
-
-// DownloadVerifiedContext fetches url under ctx using client (or a bounded default
-// client if nil), rejects HTTPS-to-HTTP redirect downgrades and payloads exceeding
-// MaxDownloadBytes, verifies HTTP 200 OK and optional expectedSHA256 hex digest,
-// and atomically writes the verified payload to targetPath with perm.
-func DownloadVerifiedContext(
-	ctx context.Context,
-	client *http.Client,
-	url, targetPath, expectedSHA256 string,
-	perm os.FileMode,
-) (int64, error) {
-	if targetPath == "" {
-		return 0, errors.New("empty target path")
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	var safeClient http.Client
-	if client == nil {
-		safeClient = http.Client{Timeout: 10 * time.Minute}
-	} else {
-		safeClient = *client
-	}
-	origRedirect := safeClient.CheckRedirect
-	safeClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 10 {
-			return errors.New("stopped after 10 redirects")
-		}
-		if len(via) > 0 && strings.EqualFold(via[len(via)-1].URL.Scheme, "https") &&
-			!strings.EqualFold(req.URL.Scheme, "https") {
-			return fmt.Errorf("refusing redirect downgrade from https to %s", req.URL.Scheme)
-		}
-		if origRedirect != nil {
-			return origRedirect(req, via)
-		}
-		return nil
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return 0, err
-	}
-	req.Header.Set("User-Agent", UserAgent)
-
-	resp, err := safeClient.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("HTTP status %d", resp.StatusCode)
-	}
-
-	hasher := sha256.New()
-	cleanSum := strings.TrimSpace(expectedSHA256)
-	lr := &io.LimitedReader{R: resp.Body, N: MaxDownloadBytes + 1}
-	written, _, err := writeReaderTempAndRename(
-		targetPath,
-		io.TeeReader(lr, hasher),
-		perm,
-		true,
-		func() error {
-			if lr.N <= 0 {
-				return fmt.Errorf("download from %s exceeds maximum size (%d bytes)", url, MaxDownloadBytes)
-			}
-			if cleanSum != "" {
-				actualSum := hex.EncodeToString(hasher.Sum(nil))
-				if !strings.EqualFold(actualSum, cleanSum) {
-					return fmt.Errorf("sha256 mismatch for %s: got %s, want %s", url, actualSum, cleanSum)
-				}
-			}
-			return nil
-		},
-	)
-	return written, err
 }

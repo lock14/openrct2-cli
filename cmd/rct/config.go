@@ -1,15 +1,16 @@
 package main
 
 import (
+	"cmp"
 	"fmt"
 	"path/filepath"
 	"runtime"
-	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/lock14/openrct2-cli/internal/config"
 	"github.com/lock14/openrct2-cli/internal/display"
+	"github.com/lock14/openrct2-cli/internal/engine"
 	"github.com/lock14/openrct2-cli/internal/gamedata"
 	"github.com/lock14/openrct2-cli/internal/rctcfg"
 )
@@ -73,9 +74,10 @@ func runConfigShow(cmd *cobra.Command, _ []string) error {
 
 func newConfigGetCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "get [key]",
-		Short: "Retrieve an effective CLI configuration value",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "get [key]",
+		Short:             "Retrieve an effective CLI configuration value",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeConfigKeys,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return runConfigShow(cmd, nil)
@@ -84,24 +86,11 @@ func newConfigGetCmd() *cobra.Command {
 			errOut := cmdErr(cmd)
 			paths, cfg := loadPathsAndConfig(errOut)
 
-			switch strings.ToLower(strings.TrimSpace(args[0])) {
-			case "channel":
-				fmt.Fprintln(out, cfg.EffectiveChannel())
-			case "openrct2_dir", "openrct2-dir":
-				fmt.Fprintln(out, paths.OpenRCT2Dir)
-			case "bin_dir", "bin-dir":
-				fmt.Fprintln(out, paths.BinDir)
-			case "engine_dir", "engine-dir":
-				fmt.Fprintln(out, paths.EngineDir)
-			case "apps_dir", "apps-dir":
-				fmt.Fprintln(out, paths.AppsDir)
-			case "rct2_path", "rct2-path":
-				fmt.Fprintln(out, cfg.RCT2Path)
-			case "rct1_path", "rct1-path":
-				fmt.Fprintln(out, cfg.RCT1Path)
-			default:
-				return unknownConfigKeyErr(args[0])
+			val, err := config.GetEffective(paths, cfg, args[0])
+			if err != nil {
+				return err
 			}
+			fmt.Fprintln(out, val)
 			return nil
 		},
 	}
@@ -109,83 +98,25 @@ func newConfigGetCmd() *cobra.Command {
 
 func newConfigSetCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "set <key> <value>",
-		Short: "Persist a CLI configuration setting in <ConfigDir>/config.json",
-		Args:  cobra.ExactArgs(2),
+		Use:               "set <key> <value>",
+		Short:             "Persist a CLI configuration setting in <ConfigDir>/config.json",
+		Args:              cobra.ExactArgs(2),
+		ValidArgsFunction: completeConfigKeys,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cmdOut(cmd)
 			errOut := cmdErr(cmd)
 			paths, cfg := loadPathsAndConfig(errOut)
 
-			key := strings.ToLower(strings.TrimSpace(args[0]))
-			val := strings.TrimSpace(args[1])
-
-			switch key {
-			case "channel":
-				norm, err := config.NormalizeChannel(val)
-				if err != nil {
-					return err
-				}
-				cfg.Channel = norm
-				val = norm
-			case "openrct2_dir", "openrct2-dir":
-				cfg.OpenRCT2Dir = val
-				key = "openrct2_dir"
-			case "bin_dir", "bin-dir":
-				cfg.BinDir = val
-				key = "bin_dir"
-			case "engine_dir", "engine-dir":
-				cfg.EngineDir = val
-				key = "engine_dir"
-			case "apps_dir", "apps-dir":
-				cfg.AppsDir = val
-				key = "apps_dir"
-			case "rct2_path", "rct2-path":
-				cfg.RCT2Path = val
-				key = "rct2_path"
-			case "rct1_path", "rct1-path":
-				cfg.RCT1Path = val
-				key = "rct1_path"
-			default:
-				return unknownConfigKeyErr(args[0])
+			key, val, err := cfg.Set(args[0], args[1])
+			if err != nil {
+				return err
 			}
-
 			if err := config.SaveConfig(paths, cfg); err != nil {
 				return err
 			}
 			fmt.Fprintf(out, "✓ Set %s = %s\n", key, val)
 			return nil
 		},
-	}
-}
-
-func unknownConfigKeyErr(rawKey string) error {
-	return fmt.Errorf(
-		"unknown configuration key %q "+
-			"(valid: channel, openrct2_dir, bin_dir, engine_dir, apps_dir, rct2_path, rct1_path)",
-		rawKey,
-	)
-}
-
-func parseDeployComponent(raw string) (rctcfg.DeployComponent, error) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "", "all":
-		return rctcfg.ComponentAll, nil
-	case "configs":
-		return rctcfg.ComponentConfigs, nil
-	case "config", "ini":
-		return rctcfg.ComponentConfig, nil
-	case "shortcuts", "keys":
-		return rctcfg.ComponentShortcuts, nil
-	case "desktop":
-		return rctcfg.ComponentDesktop, nil
-	case "icons", "icon":
-		return rctcfg.ComponentIcons, nil
-	default:
-		return "", fmt.Errorf(
-			"invalid --only component %q (expected all, configs, config, shortcuts, desktop, or icons)",
-			raw,
-		)
 	}
 }
 
@@ -203,21 +134,13 @@ func newConfigInstallCmd() *cobra.Command {
 			errOut := cmdErr(cmd)
 			paths, cfg := loadPathsAndConfig(errOut)
 
-			comp, err := parseDeployComponent(onlyFlag)
+			comp, err := rctcfg.ParseDeployComponent(onlyFlag)
 			if err != nil {
 				return err
 			}
 
 			iniRCT2, iniRCT1 := rctcfg.ReadExistingGamePaths(filepath.Join(paths.OpenRCT2Dir, "config.ini"))
 			disc := gamedata.Discover(gamedata.DefaultSearchRoots(cfg.RCT2Path, cfg.RCT1Path, iniRCT2, iniRCT1))
-			rct2 := disc.RCT2Path
-			if rct2 == "" {
-				rct2 = cfg.RCT2Path
-			}
-			rct1 := disc.RCT1Path
-			if rct1 == "" {
-				rct1 = cfg.RCT1Path
-			}
 
 			return rctcfg.Deploy(paths, rctcfg.DeployOptions{
 				TargetOS:  runtime.GOOS,
@@ -225,8 +148,8 @@ func newConfigInstallCmd() *cobra.Command {
 				Force:     force,
 				Render: rctcfg.RenderOptions{
 					Display:    display.Detect(),
-					RCT2Path:   rct2,
-					RCT1Path:   rct1,
+					RCT2Path:   cmp.Or(disc.RCT2Path, cfg.RCT2Path),
+					RCT1Path:   cmp.Or(disc.RCT1Path, cfg.RCT1Path),
 					SaveDir:    paths.SaveDir,
 					PlayerName: rctcfg.ResolvePlayerName(),
 					ExecPath:   paths.ManagedEngineBinaryForOS(runtime.GOOS),
@@ -238,6 +161,7 @@ func newConfigInstallCmd() *cobra.Command {
 	installCmd.Flags().StringVar(
 		&onlyFlag, "only", "all", "Deploy subset (all, configs, config, shortcuts, desktop, icons)",
 	)
+	registerDeployComponentFlagCompletion(installCmd, "only")
 	return installCmd
 }
 
@@ -289,7 +213,13 @@ func newConfigUninstallCmd() *cobra.Command {
 			out := cmdOut(cmd)
 			errOut := cmdErr(cmd)
 			paths, _ := loadPathsAndConfig(errOut)
-			return rctcfg.Uninstall(paths, removeAll, runtime.GOOS, out)
+			if err := rctcfg.Uninstall(paths, runtime.GOOS, out); err != nil {
+				return err
+			}
+			if removeAll {
+				return engine.Uninstall(paths, runtime.GOOS, out)
+			}
+			return nil
 		},
 	}
 	unCmd.Flags().BoolVar(&removeAll, "all", false, "Also remove managed user-space OpenRCT2 engine binaries")

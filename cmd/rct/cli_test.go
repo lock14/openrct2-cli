@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -91,20 +93,49 @@ func TestCLIVersionHelpAndConfigWorkflow(t *testing.T) {
 		t.Fatalf("unexpected dry-run output: %s", out)
 	}
 
-	// Verify addons list, show, custom add, and remove
+	// Verify addons list, show, type filter validation, custom add, and remove
 	out, _, err = execCLI(t, "addons", "list")
 	if err != nil || !strings.Contains(out, "ride-vehicle-editor") || !strings.Contains(out, "openmusic") {
 		t.Fatalf("addons list = (%q, %v)", out, err)
+	}
+	if _, _, err := execCLI(t, "addons", "install", "--type", "invalid"); err == nil {
+		t.Fatal("expected error for invalid --type in addons install")
 	}
 	out, _, err = execCLI(t, "plugins", "show", "rve")
 	if err != nil || !strings.Contains(out, "Ride Vehicle Editor") {
 		t.Fatalf("plugins show rve = (%q, %v)", out, err)
 	}
-	if _, _, err := execCLI(t, "addons", "add", "test-mod", "--url", "https://example.com/mod.js"); err != nil {
+	if _, _, err := execCLI(t, "addons", "add", "test-mod", "--url", "https://example.com/mod.js?dl=1"); err != nil {
 		t.Fatalf("addons add: %v", err)
 	}
 	if _, _, err := execCLI(t, "addons", "remove", "test-mod"); err != nil {
 		t.Fatalf("addons remove: %v", err)
+	}
+
+	// Verify dynamic shell completion handlers
+	compOut, _, err := execCLI(t, "__complete", "config", "set", "")
+	if err != nil || !strings.Contains(compOut, "openrct2_dir") {
+		t.Fatalf("__complete config set = (%q, %v)", compOut, err)
+	}
+	compOut, _, err = execCLI(t, "__complete", "config", "set", "channel", "")
+	if err != nil || !strings.Contains(compOut, "develop") {
+		t.Fatalf("__complete config set channel = (%q, %v)", compOut, err)
+	}
+	compOut, _, err = execCLI(t, "__complete", "config", "install", "--only", "")
+	if err != nil || !strings.Contains(compOut, "shortcuts") {
+		t.Fatalf("__complete config install --only = (%q, %v)", compOut, err)
+	}
+	compOut, _, err = execCLI(t, "__complete", "addons", "install", "")
+	if err != nil || !strings.Contains(compOut, "openmusic") || !strings.Contains(compOut, "all") {
+		t.Fatalf("__complete addons install = (%q, %v)", compOut, err)
+	}
+
+	// Verify addons build synchronizes README.md in a temporary directory
+	buildDir := t.TempDir()
+	seedReadme := "# Title\n\n## Curated asset packs and plugins\n\noutdated\n\n## Footer\n"
+	_ = os.WriteFile(filepath.Join(buildDir, "README.md"), []byte(seedReadme), 0o644)
+	if out, _, err := execCLI(t, "addons", "build", buildDir); err != nil || !strings.Contains(out, "Synchronized") {
+		t.Fatalf("addons build = (%q, %v)", out, err)
 	}
 
 	// Verify games set & status with mock RCT2 directory
@@ -124,7 +155,7 @@ func TestCLIVersionHelpAndConfigWorkflow(t *testing.T) {
 	if _, _, err := execCLI(t, "config", "uninstall"); err != nil {
 		t.Fatalf("config uninstall: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(openrct2Dir, "config.ini")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(openrct2Dir, "config.ini")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal("expected config.ini removed by uninstall")
 	}
 }
@@ -230,7 +261,7 @@ func TestCLISubcommandsEndToEnd(t *testing.T) {
 	if _, _, err := execCLI(t, "config", "uninstall", "--all"); err != nil {
 		t.Fatalf("config uninstall --all: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(openrct2Dir, "shortcuts.json")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(openrct2Dir, "shortcuts.json")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal("expected shortcuts.json removed")
 	}
 }

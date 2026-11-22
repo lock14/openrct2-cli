@@ -4,6 +4,7 @@ package rctcfg
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -37,7 +38,7 @@ func UnquoteINIString(raw string) string {
 // GetINIValue retrieves the raw value assigned to key inside [section] of iniText.
 func GetINIValue(iniText, section, key string) (string, bool) {
 	curSection := ""
-	for _, line := range strings.Split(strings.ReplaceAll(iniText, "\r\n", "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.ReplaceAll(iniText, "\r\n", "\n"), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, ";") || strings.HasPrefix(trimmed, "#") {
 			continue
@@ -60,31 +61,31 @@ func GetINIValue(iniText, section, key string) (string, bool) {
 	return "", false
 }
 
+type iniUpdate struct {
+	origKey string
+	val     string
+}
+
 // SetINIValues updates or appends raw formatted key = value entries inside [section]
-// while preserving comments, blank lines, and ordering of untouched keys.
+// deterministically while preserving comments, blank lines, and ordering of untouched keys.
 func SetINIValues(iniText, section string, updates map[string]string) string {
 	if len(updates) == 0 {
 		return iniText
 	}
 	lines := strings.Split(strings.ReplaceAll(iniText, "\r\n", "\n"), "\n")
 	applied := make(map[string]bool, len(updates))
-	lowerUpdates := make(map[string]struct {
-		origKey string
-		val     string
-	}, len(updates))
-	var orderedKeys []string
+	lowerUpdates := make(map[string]iniUpdate, len(updates))
+	orderedKeys := make([]string, 0, len(updates))
 	for k, v := range updates {
 		lk := strings.ToLower(k)
-		lowerUpdates[lk] = struct {
-			origKey string
-			val     string
-		}{origKey: k, val: v}
+		lowerUpdates[lk] = iniUpdate{origKey: k, val: v}
 		orderedKeys = append(orderedKeys, lk)
 	}
+	slices.Sort(orderedKeys)
 
 	curSection := ""
 	targetSectionFound := false
-	lastIdxInSection := -1
+	insertAfterIdx := -1
 
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -92,23 +93,21 @@ func SetINIValues(iniText, section string, updates map[string]string) string {
 			curSection = strings.ToLower(strings.TrimSpace(trimmed[1 : len(trimmed)-1]))
 			if strings.EqualFold(curSection, section) {
 				targetSectionFound = true
-				lastIdxInSection = i
+				insertAfterIdx = i
 			}
 			continue
 		}
 		if !strings.EqualFold(curSection, section) {
 			continue
 		}
-		if trimmed != "" {
-			lastIdxInSection = i
-		}
-		if strings.HasPrefix(trimmed, ";") || strings.HasPrefix(trimmed, "#") {
+		if trimmed == "" || strings.HasPrefix(trimmed, ";") || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
 		k, _, ok := strings.Cut(line, "=")
 		if !ok {
 			continue
 		}
+		insertAfterIdx = i
 		lk := strings.ToLower(strings.TrimSpace(k))
 		if upd, want := lowerUpdates[lk]; want {
 			lines[i] = fmt.Sprintf("%s = %s", strings.TrimSpace(k), upd.val)
@@ -125,11 +124,8 @@ func SetINIValues(iniText, section string, updates map[string]string) string {
 	}
 
 	if len(missingLines) > 0 {
-		if targetSectionFound && lastIdxInSection >= 0 {
-			head := append([]string(nil), lines[:lastIdxInSection+1]...)
-			tail := lines[lastIdxInSection+1:]
-			head = append(head, missingLines...)
-			lines = append(head, tail...)
+		if targetSectionFound && insertAfterIdx >= 0 {
+			lines = slices.Insert(lines, insertAfterIdx+1, missingLines...)
 		} else {
 			if len(lines) > 0 && lines[len(lines)-1] != "" {
 				lines = append(lines, "")

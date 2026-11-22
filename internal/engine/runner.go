@@ -44,22 +44,16 @@ func ResolveBinary(paths *config.Paths, headless bool, targetOS string) (string,
 		if headless {
 			cand = paths.ManagedHeadlessBinaryForOS(targetOS)
 		}
-		if cand != "" {
-			if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
-				return cand, nil
-			}
+		if IsBinaryReady(cand) {
+			return cand, nil
 		}
-		if payload := paths.EnginePayloadForOS(targetOS); payload != "" {
-			if fi, err := os.Stat(payload); err == nil && !fi.IsDir() {
-				return payload, nil
-			}
+		if payload := paths.EnginePayloadForOS(targetOS); IsBinaryReady(payload) {
+			return payload, nil
 		}
 	}
 
-	if targetOS == "linux" {
-		if fi, err := os.Stat(legacyOptAppImage); err == nil && !fi.IsDir() {
-			return legacyOptAppImage, nil
-		}
+	if targetOS == "linux" && IsBinaryReady(legacyOptAppImage) {
+		return legacyOptAppImage, nil
 	}
 
 	if headless {
@@ -90,11 +84,11 @@ func PrepareLaunch(paths *config.Paths, opts LaunchOptions) (*LaunchPlan, error)
 	if opts.Headless && !strings.Contains(baseLower, "openrct2-cli") {
 		args = append(args, "--headless")
 	}
-	if strings.TrimSpace(opts.Target) != "" {
-		args = append(args, strings.TrimSpace(opts.Target))
+	if target := strings.TrimSpace(opts.Target); target != "" {
+		args = append(args, target)
 	}
-	if strings.TrimSpace(opts.CustomUserDataDir) != "" {
-		args = append(args, "--user-data-path="+strings.TrimSpace(opts.CustomUserDataDir))
+	if customDir := strings.TrimSpace(opts.CustomUserDataDir); customDir != "" {
+		args = append(args, "--user-data-path="+customDir)
 	}
 	args = append(args, opts.ExtraArgs...)
 

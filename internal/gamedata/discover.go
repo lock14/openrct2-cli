@@ -9,8 +9,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
 	"strings"
+)
+
+// Recognized RCT2 base asset editions.
+const (
+	EditionRCT2       = "RollerCoaster Tycoon 2"
+	EditionRCTClassic = "RollerCoaster Tycoon Classic"
 )
 
 var vdfPathRegex = regexp.MustCompile(`"path"\s*"([^"]+)"`)
@@ -59,8 +64,8 @@ func DefaultSearchRoots(extraHints ...string) []string {
 func SearchRootsForOS(goos, home string, extraHints ...string) []string {
 	var roots []string
 	for _, h := range extraHints {
-		if strings.TrimSpace(h) != "" {
-			roots = append(roots, strings.TrimSpace(h))
+		if trimmed := strings.TrimSpace(h); trimmed != "" {
+			roots = append(roots, trimmed)
 		}
 	}
 
@@ -217,17 +222,17 @@ func looksLikeRCTFolder(name string) bool {
 }
 
 // ValidateRCT2Dir checks whether dir is a valid RollerCoaster Tycoon 2 or RCT Classic root.
-// It returns ("RollerCoaster Tycoon 2", true) for retail/Steam/GOG RCT2 installs,
-// ("RollerCoaster Tycoon Classic", true) for RCT Classic installs, or ("", false).
+// It returns (EditionRCT2, true) for retail/Steam/GOG RCT2 installs,
+// (EditionRCTClassic, true) for RCT Classic installs, or ("", false).
 func ValidateRCT2Dir(dir string) (string, bool) {
 	if strings.TrimSpace(dir) == "" {
 		return "", false
 	}
 	if hasCaseInsensitiveFile(dir, "Data", "g1.dat") && hasCaseInsensitiveDir(dir, "ObjData") {
-		return "RollerCoaster Tycoon 2", true
+		return EditionRCT2, true
 	}
 	if hasCaseInsensitiveFile(dir, "Assets", "g1.dat") {
-		return "RollerCoaster Tycoon Classic", true
+		return EditionRCTClassic, true
 	}
 	return "", false
 }
@@ -241,6 +246,19 @@ func ValidateRCT1Dir(dir string) bool {
 		return false
 	}
 	return hasCaseInsensitiveFile(dir, "Data", "csg1i.dat") || hasCaseInsensitiveDir(dir, "Scenarios")
+}
+
+var knownSubfolders = []string{
+	"Roller Coaster Tycoon 2",
+	"RollerCoaster Tycoon 2",
+	"RollerCoaster Tycoon 2 Triple Thrill Pack",
+	"RollerCoaster Tycoon Classic",
+	"RollerCoaster Tycoon Deluxe",
+	"Roller Coaster Tycoon Deluxe",
+	"RollerCoaster Tycoon",
+	"RCT2",
+	"RCT1",
+	"RCT",
 }
 
 // Discover scans candidate roots (and Steam/GOG child folders beneath them) for RCT2 and RCT1.
@@ -259,17 +277,16 @@ func Discover(roots []string) DiscoveryResult {
 		}
 	}
 
-	knownSubfolders := []string{
-		"Roller Coaster Tycoon 2",
-		"RollerCoaster Tycoon 2",
-		"RollerCoaster Tycoon 2 Triple Thrill Pack",
-		"RollerCoaster Tycoon Classic",
-		"RollerCoaster Tycoon Deluxe",
-		"Roller Coaster Tycoon Deluxe",
-		"RollerCoaster Tycoon",
-		"RCT2",
-		"RCT1",
-		"RCT",
+	addMatchingSubdirs := func(parent string) {
+		entries, err := os.ReadDir(parent)
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			if e.IsDir() && looksLikeRCTFolder(e.Name()) {
+				addCandidate(filepath.Join(parent, e.Name()))
+			}
+		}
 	}
 
 	for _, root := range roots {
@@ -279,27 +296,8 @@ func Discover(roots []string) DiscoveryResult {
 			addCandidate(filepath.Join(commonDir, sub))
 			addCandidate(filepath.Join(root, sub))
 		}
-		if entries, err := os.ReadDir(commonDir); err == nil {
-			names := make([]string, 0, len(entries))
-			for _, e := range entries {
-				if e.IsDir() {
-					names = append(names, e.Name())
-				}
-			}
-			sort.Strings(names)
-			for _, name := range names {
-				if looksLikeRCTFolder(name) {
-					addCandidate(filepath.Join(commonDir, name))
-				}
-			}
-		}
-		if entries, err := os.ReadDir(root); err == nil {
-			for _, e := range entries {
-				if e.IsDir() && looksLikeRCTFolder(e.Name()) {
-					addCandidate(filepath.Join(root, e.Name()))
-				}
-			}
-		}
+		addMatchingSubdirs(commonDir)
+		addMatchingSubdirs(root)
 	}
 
 	var res DiscoveryResult
@@ -308,7 +306,7 @@ func Discover(roots []string) DiscoveryResult {
 	for _, cand := range candidates {
 		if res.RCT2Path == "" {
 			if edition, ok := ValidateRCT2Dir(cand); ok {
-				if edition == "RollerCoaster Tycoon 2" {
+				if edition == EditionRCT2 {
 					res.RCT2Path = cand
 					res.RCT2Edition = edition
 				} else if classicFallback == "" {
@@ -323,7 +321,7 @@ func Discover(roots []string) DiscoveryResult {
 
 	if res.RCT2Path == "" && classicFallback != "" {
 		res.RCT2Path = classicFallback
-		res.RCT2Edition = "RollerCoaster Tycoon Classic"
+		res.RCT2Edition = EditionRCTClassic
 	}
 
 	return res

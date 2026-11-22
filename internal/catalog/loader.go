@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,10 +12,11 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	openrct2cli "github.com/lock14/openrct2-cli"
+	"github.com/lock14/openrct2-cli/internal/fsutil"
 )
 
 var (
@@ -34,14 +36,8 @@ func ScanPersonalPath(text string) string {
 	return personalPathRegex.FindString(text)
 }
 
-type kindEnvelope struct {
-	SchemaVersion int    `json:"schema_version"`
-	Kind          string `json:"kind"`
-	ID            string `json:"id"`
-}
-
 func decodeSingleJSON(data []byte, dst any) error {
-	trimmed := bytes.TrimPrefix(bytes.TrimSpace(data), []byte("\xef\xbb\xbf"))
+	trimmed := fsutil.StripUTF8BOM(bytes.TrimSpace(data))
 	if len(trimmed) == 0 {
 		return errors.New("empty JSON document")
 	}
@@ -53,6 +49,82 @@ func decodeSingleJSON(data []byte, dst any) error {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		return errors.New("unexpected trailing data after JSON object")
+	}
+	return nil
+}
+
+// ValidateChannel verifies and normalizes structural invariants on ch.
+func ValidateChannel(ch *ChannelConfig) error {
+	if ch == nil {
+		return errors.New("nil channel entity")
+	}
+	if !IsValidID(ch.ID) {
+		return fmt.Errorf("invalid channel id %q", ch.ID)
+	}
+	return nil
+}
+
+// ValidateAddon verifies and normalizes structural, checksum, and relative-path invariants on ad.
+func ValidateAddon(ad *Addon) error {
+	if ad == nil {
+		return errors.New("nil addon entity")
+	}
+	if !IsValidID(ad.ID) {
+		return fmt.Errorf("invalid addon id %q (use lowercase letters, digits, and hyphens)", ad.ID)
+	}
+	if ad.AddonType != AddonTypeAssetPack && ad.AddonType != AddonTypePlugin {
+		return fmt.Errorf(
+			"invalid addon_type %q (expected %q or %q)",
+			ad.AddonType, AddonTypePlugin, AddonTypeAssetPack,
+		)
+	}
+	if ad.Source.Mode != InstallModeFile && ad.Source.Mode != InstallModeZip {
+		return fmt.Errorf(
+			"invalid source.mode %q (expected %q or %q)",
+			ad.Source.Mode, InstallModeFile, InstallModeZip,
+		)
+	}
+	url := strings.TrimSpace(ad.Source.URL)
+	if url == "" {
+		return errors.New("source.url is required")
+	}
+	if !strings.HasPrefix(url, "https://") && !strings.HasPrefix(url, "http://") {
+		return fmt.Errorf("source URL %q must use https:// or http://", ad.Source.URL)
+	}
+	ad.Source.URL = url
+
+	normSum, err := fsutil.ValidateSHA256Hex(ad.Source.SHA256)
+	if err != nil {
+		return fmt.Errorf("invalid source.sha256: %w", err)
+	}
+	ad.Source.SHA256 = normSum
+
+	if ad.Source.Mode == InstallModeFile {
+		cleanRel, relErr := fsutil.CleanRel(ad.Source.TargetPath)
+		if relErr != nil {
+			return fmt.Errorf("invalid target_path: %w", relErr)
+		}
+		ad.Source.TargetPath = cleanRel
+		if len(ad.Targets) == 0 {
+			ad.Targets = []string{cleanRel}
+		}
+	} else if trimmedDir := strings.TrimSpace(ad.Source.TargetDir); trimmedDir != "" && trimmedDir != "." {
+		cleanDir, dirErr := fsutil.CleanRel(trimmedDir)
+		if dirErr != nil {
+			return fmt.Errorf("invalid target_dir: %w", dirErr)
+		}
+		ad.Source.TargetDir = cleanDir
+	}
+
+	if len(ad.Targets) == 0 {
+		return errors.New("at least one target path is required")
+	}
+	for i, t := range ad.Targets {
+		cleanT, relErr := fsutil.CleanRel(t)
+		if relErr != nil {
+			return fmt.Errorf("invalid target %q: %w", t, relErr)
+		}
+		ad.Targets[i] = cleanT
 	}
 	return nil
 }
@@ -69,7 +141,7 @@ func DecodeEntityBytes(data []byte, srcPath string, layer Layer) (*ChannelConfig
 		SchemaVersion int    `json:"schema_version"`
 		Kind          string `json:"kind"`
 	}
-	if err := json.Unmarshal(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")), &env); err != nil {
+	if err := json.Unmarshal(fsutil.StripUTF8BOM(data), &env); err != nil {
 		return nil, nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 	if env.SchemaVersion != SchemaVersion {
@@ -82,8 +154,8 @@ func DecodeEntityBytes(data []byte, srcPath string, layer Layer) (*ChannelConfig
 		if err := decodeSingleJSON(data, &ch); err != nil {
 			return nil, nil, err
 		}
-		if !IsValidID(ch.ID) {
-			return nil, nil, fmt.Errorf("invalid channel id %q", ch.ID)
+		if err := ValidateChannel(&ch); err != nil {
+			return nil, nil, err
 		}
 		ch.SourcePath = srcPath
 		ch.Layer = layer
@@ -94,20 +166,11 @@ func DecodeEntityBytes(data []byte, srcPath string, layer Layer) (*ChannelConfig
 		if err := decodeSingleJSON(data, &ad); err != nil {
 			return nil, nil, err
 		}
-		if !IsValidID(ad.ID) {
-			return nil, nil, fmt.Errorf("invalid addon id %q", ad.ID)
-		}
-		if ad.AddonType != AddonTypeAssetPack && ad.AddonType != AddonTypePlugin {
-			return nil, nil, fmt.Errorf("invalid addon_type %q", ad.AddonType)
-		}
-		if ad.Source.Mode != InstallModeFile && ad.Source.Mode != InstallModeZip {
-			return nil, nil, fmt.Errorf("invalid source.mode %q", ad.Source.Mode)
-		}
-		if strings.TrimSpace(ad.Source.URL) == "" {
-			return nil, nil, errors.New("source.url is required")
-		}
 		if len(ad.Targets) == 0 {
 			return nil, nil, errors.New("at least one target path is required")
+		}
+		if err := ValidateAddon(&ad); err != nil {
+			return nil, nil, err
 		}
 		ad.SourcePath = srcPath
 		ad.Layer = layer
@@ -123,6 +186,17 @@ func LoadCurated() (*Catalog, error) {
 	return LoadFromFS(openrct2cli.FS, "catalog", LayerCurated)
 }
 
+func sortedJSONEntryNames(entries []fs.DirEntry) []string {
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(strings.ToLower(e.Name()), ".json") {
+			names = append(names, e.Name())
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
 // LoadFromFS loads all *.json catalog entities from dir inside fsys.
 func LoadFromFS(fsys fs.FS, dir string, layer Layer) (*Catalog, error) {
 	entries, err := fs.ReadDir(fsys, dir)
@@ -135,15 +209,7 @@ func LoadFromFS(fsys fs.FS, dir string, layer Layer) (*Catalog, error) {
 	}
 	addonIndex := make(map[string]int)
 
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(strings.ToLower(e.Name()), ".json") {
-			names = append(names, e.Name())
-		}
-	}
-	sort.Strings(names)
-
-	for _, name := range names {
+	for _, name := range sortedJSONEntryNames(entries) {
 		relPath := path.Join(dir, name)
 		data, readErr := fs.ReadFile(fsys, relPath)
 		if readErr != nil {
@@ -193,26 +259,18 @@ func LoadLayered(userCatalogDir string, strict bool) (*Catalog, error) {
 
 	entries, err := os.ReadDir(userCatalogDir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return cat, nil
 		}
 		return nil, fmt.Errorf("reading user catalog directory %s: %w", userCatalogDir, err)
 	}
-
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(strings.ToLower(e.Name()), ".json") {
-			names = append(names, e.Name())
-		}
-	}
-	sort.Strings(names)
 
 	addonIdx := make(map[string]int, len(cat.Addons))
 	for i, ad := range cat.Addons {
 		addonIdx[ad.ID] = i
 	}
 
-	for _, name := range names {
+	for _, name := range sortedJSONEntryNames(entries) {
 		fullPath := filepath.Join(userCatalogDir, name)
 		data, readErr := os.ReadFile(fullPath)
 		if readErr != nil {
@@ -251,10 +309,10 @@ func LoadLayered(userCatalogDir string, strict bool) (*Catalog, error) {
 }
 
 func sortAddons(addons []Addon) {
-	sort.Slice(addons, func(i, j int) bool {
-		if addons[i].AddonType != addons[j].AddonType {
-			return addons[i].AddonType < addons[j].AddonType
-		}
-		return addons[i].ID < addons[j].ID
+	slices.SortFunc(addons, func(a, b Addon) int {
+		return cmp.Or(
+			cmp.Compare(a.AddonType, b.AddonType),
+			cmp.Compare(a.ID, b.ID),
+		)
 	})
 }

@@ -2,8 +2,8 @@ package engine
 
 import (
 	"archive/zip"
+	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,12 +16,14 @@ var rePlistBundleExec = regexp.MustCompile(
 	`(?s)<key>\s*CFBundleExecutable\s*</key>\s*<string>\s*([^<\r\n]+?)\s*</string>`,
 )
 
-func zipSlashName(zf *zip.File) string {
-	return strings.ReplaceAll(zf.Name, `\`, `/`)
-}
-
-func isZipSymlink(zf *zip.File) bool {
-	return zf.Mode()&os.ModeSymlink != 0
+// IsBinaryReady reports whether path exists on disk as a non-empty regular file
+// (following symlinks when present).
+func IsBinaryReady(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	fi, err := os.Stat(path)
+	return err == nil && !fi.IsDir() && fi.Size() > 0
 }
 
 func swapDirectoryAtomic(stagedDir, destDir string) error {
@@ -37,10 +39,11 @@ func swapDirectoryAtomic(stagedDir, destDir string) error {
 	}
 
 	if err := os.Rename(stagedDir, destDir); err != nil {
+		var rollbackErr error
 		if hadExisting {
-			_ = os.Rename(backupDir, destDir)
+			rollbackErr = os.Rename(backupDir, destDir)
 		}
-		return fmt.Errorf("installing bundle %s: %w", destDir, err)
+		return errors.Join(fmt.Errorf("installing bundle %s: %w", destDir, err), rollbackErr)
 	}
 
 	if hadExisting {
@@ -65,29 +68,29 @@ func writeWindowsCmdShim(shimPath, exePath string) error {
 	return err
 }
 
-func isBinaryReady(path string) bool {
-	if strings.TrimSpace(path) == "" {
-		return false
+func bundleEntryMode(cleanRel string, zfMode os.FileMode) os.FileMode {
+	lower := strings.ToLower(cleanRel)
+	if zfMode&0o111 != 0 ||
+		strings.HasPrefix(cleanRel, "Contents/MacOS/") ||
+		strings.HasSuffix(lower, ".dylib") ||
+		strings.HasSuffix(lower, ".exe") ||
+		strings.HasSuffix(lower, ".dll") {
+		return 0o755
 	}
-	fi, err := os.Stat(path)
-	return err == nil && !fi.IsDir() && fi.Size() > 0
+	return 0o644
 }
 
-func writeSymlinkAtomic(linkDest, targetPath string) error {
-	parent := filepath.Dir(linkDest)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return err
-	}
-	tmpLink := filepath.Join(parent, fmt.Sprintf(".rct-link-%d", os.Getpid()))
-	_ = os.Remove(tmpLink)
-	if err := os.Symlink(targetPath, tmpLink); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpLink, linkDest); err != nil {
-		_ = os.Remove(tmpLink)
-		return err
-	}
-	return nil
+func extractZipTreeInRoot(
+	files []*zip.File,
+	stripPrefix, destRoot string,
+	allowBundleSymlinks bool,
+) error {
+	_, err := fsutil.ExtractZipFiles(files, destRoot, fsutil.ExtractZipOptions{
+		StripPrefix:         stripPrefix,
+		AllowBundleSymlinks: allowBundleSymlinks,
+		ModeForEntry:        bundleEntryMode,
+	})
+	return err
 }
 
 func (ins *Installer) installLinuxAppImage(tmpPayload, payloadPath, linkDest string) error {
@@ -103,11 +106,27 @@ func (ins *Installer) installLinuxAppImage(tmpPayload, payloadPath, linkDest str
 	if err := os.Chmod(payloadPath, 0o755); err != nil {
 		return err
 	}
-	if err := writeSymlinkAtomic(linkDest, payloadPath); err != nil {
-		// Fallback to POSIX wrapper if filesystem forbids symlinks
+	if err := fsutil.WriteSymlinkAtomic(linkDest, payloadPath); err != nil {
+		// Fallback to POSIX wrapper if filesystem forbids symlinks.
 		return writePosixWrapper(linkDest, payloadPath)
 	}
 	return nil
+}
+
+func findMacAppBundleInZip(files []*zip.File) (string, string, error) {
+	for _, zf := range files {
+		slash := strings.ReplaceAll(zf.Name, `\`, `/`)
+		if strings.Contains(slash, "..") {
+			continue
+		}
+		parts := strings.Split(slash, "/")
+		for i, part := range parts {
+			if strings.HasSuffix(strings.ToLower(part), ".app") && part != ".app" {
+				return strings.Join(parts[:i+1], "/") + "/", part, nil
+			}
+		}
+	}
+	return "", "", errors.New("no .app bundle found in macOS archive")
 }
 
 func (ins *Installer) installMacAppZip(zipPath, wrapperDest string) error {
@@ -117,27 +136,9 @@ func (ins *Installer) installMacAppZip(zipPath, wrapperDest string) error {
 	}
 	defer zr.Close()
 
-	appPrefix := ""
-	appBundleName := ""
-	for _, zf := range zr.File {
-		slash := zipSlashName(zf)
-		if strings.Contains(slash, "..") {
-			continue
-		}
-		parts := strings.Split(slash, "/")
-		for i, part := range parts {
-			if strings.HasSuffix(strings.ToLower(part), ".app") && part != ".app" {
-				appPrefix = strings.Join(parts[:i+1], "/") + "/"
-				appBundleName = part
-				break
-			}
-		}
-		if appPrefix != "" {
-			break
-		}
-	}
-	if appPrefix == "" {
-		return fmt.Errorf("no .app bundle found in macOS archive")
+	appPrefix, appBundleName, err := findMacAppBundleInZip(zr.File)
+	if err != nil {
+		return err
 	}
 
 	appsDir := ins.Paths.AppsDir
@@ -242,8 +243,8 @@ func (ins *Installer) installWindowsPortableZip(zipPath, destExe string) error {
 	if err := extractZipTreeInRoot(zr.File, "", stagedDir, false); err != nil {
 		return err
 	}
-	if _, err := os.Stat(filepath.Join(stagedDir, "openrct2.exe")); err != nil {
-		return fmt.Errorf("openrct2.exe missing from Windows portable archive: %w", err)
+	if !IsBinaryReady(filepath.Join(stagedDir, "openrct2.exe")) {
+		return errors.New("openrct2.exe missing from Windows portable archive")
 	}
 	if err := swapDirectoryAtomic(stagedDir, engineDir); err != nil {
 		return err
@@ -256,156 +257,4 @@ func (ins *Installer) installWindowsPortableZip(zipPath, destExe string) error {
 		}
 	}
 	return nil
-}
-
-func extractZipTreeInRoot(
-	files []*zip.File,
-	stripPrefix, destRoot string,
-	allowBundleSymlinks bool,
-) error {
-	root, err := os.OpenRoot(destRoot)
-	if err != nil {
-		return err
-	}
-	defer root.Close()
-
-	var symlinks []*zip.File
-	var symlinkRels []string
-
-	for _, zf := range files {
-		slash := zipSlashName(zf)
-		if stripPrefix != "" {
-			if !strings.HasPrefix(slash, stripPrefix) {
-				continue
-			}
-			slash = strings.TrimPrefix(slash, stripPrefix)
-		}
-		if slash == "" || strings.HasSuffix(slash, "/") || zf.FileInfo().IsDir() {
-			continue
-		}
-		cleanRel, relErr := fsutil.CleanRel(slash)
-		if relErr != nil {
-			return fmt.Errorf("unsafe archive path %q: %w", zf.Name, relErr)
-		}
-		if isZipSymlink(zf) {
-			if !allowBundleSymlinks {
-				return fmt.Errorf("unexpected symlink %q in archive", zf.Name)
-			}
-			symlinks = append(symlinks, zf)
-			symlinkRels = append(symlinkRels, cleanRel)
-			continue
-		}
-		perm := os.FileMode(0o644)
-		lower := strings.ToLower(cleanRel)
-		if zf.Mode()&0o111 != 0 ||
-			strings.HasPrefix(cleanRel, "Contents/MacOS/") ||
-			strings.HasSuffix(lower, ".dylib") ||
-			strings.HasSuffix(lower, ".exe") ||
-			strings.HasSuffix(lower, ".dll") {
-			perm = 0o755
-		}
-		if err := writeZipEntryToRoot(root, zf, cleanRel, perm); err != nil {
-			return err
-		}
-	}
-
-	if len(symlinks) > 0 {
-		realRoot, evalErr := filepath.EvalSymlinks(destRoot)
-		if evalErr != nil {
-			return evalErr
-		}
-		for i, zf := range symlinks {
-			if err := writeSafeSymlinkToRoot(root, realRoot, destRoot, zf, symlinkRels[i]); err != nil {
-				return err
-			}
-		}
-		for i, cleanRel := range symlinkRels {
-			if _, statErr := root.Stat(cleanRel); statErr != nil {
-				return fmt.Errorf("bundle symlink %q escapes or is broken: %w", symlinks[i].Name, statErr)
-			}
-		}
-	}
-
-	return root.Close()
-}
-
-func writeZipEntryToRoot(root *os.Root, zf *zip.File, cleanRel string, perm os.FileMode) error {
-	parent := filepath.Dir(filepath.FromSlash(cleanRel))
-	if parent != "." && parent != "" {
-		if err := root.MkdirAll(parent, 0o755); err != nil {
-			return err
-		}
-	}
-	rc, err := zf.Open()
-	if err != nil {
-		return err
-	}
-	defer rc.Close()
-
-	f, err := root.OpenFile(filepath.FromSlash(cleanRel), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-	if err != nil {
-		return err
-	}
-	limited := &io.LimitedReader{R: rc, N: fsutil.MaxExtractFileBytes + 1}
-	written, copyErr := io.Copy(f, limited)
-	closeErr := f.Close()
-	if copyErr != nil {
-		_ = root.Remove(filepath.FromSlash(cleanRel))
-		return copyErr
-	}
-	if written > fsutil.MaxExtractFileBytes {
-		_ = root.Remove(filepath.FromSlash(cleanRel))
-		return fmt.Errorf("archive entry %q exceeds maximum size (%d bytes)", zf.Name, fsutil.MaxExtractFileBytes)
-	}
-	return closeErr
-}
-
-func writeSafeSymlinkToRoot(
-	root *os.Root,
-	realRoot, bundleRoot string,
-	zf *zip.File,
-	cleanRel string,
-) error {
-	rc, err := zf.Open()
-	if err != nil {
-		return err
-	}
-	defer rc.Close()
-
-	linkBytes, err := io.ReadAll(io.LimitReader(rc, 4096))
-	if err != nil {
-		return err
-	}
-	target := strings.TrimSpace(string(linkBytes))
-	slashTarget := strings.ReplaceAll(target, `\`, `/`)
-	if target == "" || strings.ContainsRune(target, 0) || filepath.IsAbs(target) ||
-		strings.HasPrefix(slashTarget, "/") || (len(slashTarget) >= 2 && slashTarget[1] == ':') {
-		return fmt.Errorf("unsafe symlink target %q in %q", target, zf.Name)
-	}
-
-	osRel := filepath.FromSlash(cleanRel)
-	parent := filepath.Dir(osRel)
-	if parent != "." && parent != "" {
-		if err := root.MkdirAll(parent, 0o755); err != nil {
-			return err
-		}
-	}
-
-	realLinkDir, err := filepath.EvalSymlinks(filepath.Join(bundleRoot, parent))
-	if err != nil {
-		return err
-	}
-	relDir, err := filepath.Rel(realRoot, realLinkDir)
-	if err != nil || relDir == ".." || strings.HasPrefix(filepath.Clean(relDir), "..") {
-		return fmt.Errorf("symlink parent %q escapes bundle", zf.Name)
-	}
-
-	resolvedTarget := filepath.Clean(filepath.Join(realLinkDir, filepath.FromSlash(slashTarget)))
-	relTarget, err := filepath.Rel(realRoot, resolvedTarget)
-	if err != nil || relTarget == ".." || strings.HasPrefix(filepath.Clean(relTarget), "..") {
-		return fmt.Errorf("symlink %q target %q escapes bundle", zf.Name, target)
-	}
-
-	_ = root.Remove(osRel)
-	return root.Symlink(filepath.FromSlash(slashTarget), osRel)
 }

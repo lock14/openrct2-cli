@@ -3,10 +3,11 @@ package engine
 import (
 	"archive/zip"
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -37,7 +38,7 @@ func buildZipBytes(t *testing.T, entries map[string]string) []byte {
 	return buf.Bytes()
 }
 
-func TestInstallerLinuxMacWindowsAndUpdateSkip(t *testing.T) {
+func TestInstallerLinuxMacWindowsUninstallAndUpdateSkip(t *testing.T) {
 	t.Parallel()
 
 	appImageBytes := []byte("#!/bin/sh\necho OpenRCT2-AppImage\n")
@@ -112,7 +113,7 @@ func TestInstallerLinuxMacWindowsAndUpdateSkip(t *testing.T) {
 	linuxPaths := config.ResolveFor("linux")
 	linuxPaths.SetConfigDir(filepath.Join(linuxRoot, "cfg"))
 	linuxPaths.SetStateDir(filepath.Join(linuxRoot, "state"))
-	linuxPaths.SetBinDirForOS("linux", filepath.Join(linuxRoot, "bin"))
+	linuxPaths.SetBinDir(filepath.Join(linuxRoot, "bin"))
 	linuxPaths.EngineDir = filepath.Join(linuxRoot, "engine")
 
 	var out bytes.Buffer
@@ -122,7 +123,7 @@ func TestInstallerLinuxMacWindowsAndUpdateSkip(t *testing.T) {
 	ins.GOOS = "linux"
 	ins.GOARCH = "amd64"
 
-	rec, err := ins.Install(context.Background(), ch, false, false)
+	rec, err := ins.Install(t.Context(), ch, false, false)
 	if err != nil {
 		t.Fatalf("Linux Install: %v", err)
 	}
@@ -136,7 +137,7 @@ func TestInstallerLinuxMacWindowsAndUpdateSkip(t *testing.T) {
 		t.Fatalf("expected symlink/wrapper in BinDir: %v", err)
 	}
 	prevDownloads := downloads
-	if _, err := ins.Install(context.Background(), ch, false, true); err != nil {
+	if _, err := ins.Install(t.Context(), ch, false, true); err != nil {
 		t.Fatalf("Linux checkUpdate: %v", err)
 	}
 	if downloads != prevDownloads {
@@ -159,7 +160,7 @@ func TestInstallerLinuxMacWindowsAndUpdateSkip(t *testing.T) {
 		t.Fatalf("unexpected preview: %s", preview)
 	}
 
-	// 2. macOS .app bundle + POSIX wrapper
+	// 2. macOS .app bundle + POSIX wrapper + clean Uninstall
 	macRoot := t.TempDir()
 	macPaths := config.ResolveFor("darwin")
 	macPaths.SetConfigDir(filepath.Join(macRoot, "cfg"))
@@ -172,7 +173,7 @@ func TestInstallerLinuxMacWindowsAndUpdateSkip(t *testing.T) {
 	insMac.Client = srv.Client()
 	insMac.GOOS = "darwin"
 	insMac.GOARCH = "arm64"
-	if _, err := insMac.Install(context.Background(), ch, false, false); err != nil {
+	if _, err := insMac.Install(t.Context(), ch, false, false); err != nil {
 		t.Fatalf("macOS Install: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(macRoot, "Apps", "OpenRCT2.app", "Contents", "MacOS", "OpenRCT2")); err != nil {
@@ -181,8 +182,14 @@ func TestInstallerLinuxMacWindowsAndUpdateSkip(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(macRoot, "bin", "openrct2")); err != nil {
 		t.Fatalf("expected macOS wrapper script: %v", err)
 	}
+	if err := Uninstall(macPaths, "darwin", &out); err != nil {
+		t.Fatalf("macOS Uninstall: %v", err)
+	}
+	if _, err := os.Stat(macPaths.EngineDir); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("expected OpenRCT2.app removed by Uninstall")
+	}
 
-	// 3. Windows portable bundle + cmd shim + headless binary resolution
+	// 3. Windows portable bundle + cmd shim + headless binary resolution + Uninstall
 	winRoot := t.TempDir()
 	winPaths := config.ResolveFor("windows")
 	winPaths.SetConfigDir(filepath.Join(winRoot, "cfg"))
@@ -195,7 +202,7 @@ func TestInstallerLinuxMacWindowsAndUpdateSkip(t *testing.T) {
 	insWin.Client = srv.Client()
 	insWin.GOOS = "windows"
 	insWin.GOARCH = "amd64"
-	if _, err := insWin.Install(context.Background(), ch, false, false); err != nil {
+	if _, err := insWin.Install(t.Context(), ch, false, false); err != nil {
 		t.Fatalf("Windows Install: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(winRoot, "engine", "data", "g2.dat")); err != nil {
@@ -208,10 +215,16 @@ func TestInstallerLinuxMacWindowsAndUpdateSkip(t *testing.T) {
 	if !strings.HasSuffix(winPlan.Binary, "openrct2-cli.exe") {
 		t.Fatalf("expected openrct2-cli.exe for Windows headless mode, got %s", winPlan.Binary)
 	}
+	if err := Uninstall(winPaths, "windows", &out); err != nil {
+		t.Fatalf("Windows Uninstall: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(winRoot, "bin", "openrct2.cmd")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("expected openrct2.cmd shim removed by Uninstall")
+	}
 
 	// 4. Execute DryRun preview and test offline pinned fallback + Zip Slip rejection
 	var dryOut bytes.Buffer
-	if err := Execute(context.Background(), plan, &dryOut, &dryOut); err != nil {
+	if err := Execute(t.Context(), plan, &dryOut, &dryOut); err != nil {
 		t.Fatalf("Execute DryRun: %v", err)
 	}
 	if !strings.Contains(dryOut.String(), "Six Flags.park") {
@@ -237,7 +250,7 @@ func TestInstallerLinuxMacWindowsAndUpdateSkip(t *testing.T) {
 	insFallback.Client = failSrv.Client()
 	insFallback.GOOS = "linux"
 	insFallback.GOARCH = "amd64"
-	tag, dlURL, sum, err := insFallback.ResolveAsset(context.Background(), pinnedCh)
+	tag, dlURL, sum, err := insFallback.ResolveAsset(t.Context(), pinnedCh)
 	if err != nil || tag != "v0.5.7-pinned" || sum != appImageHex || dlURL == "" {
 		t.Fatalf("expected pinned fallback, got (%q, %q, %q, %v)", tag, dlURL, sum, err)
 	}

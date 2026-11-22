@@ -5,9 +5,11 @@ package repolint
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -16,10 +18,6 @@ import (
 )
 
 var (
-	sha256HexRegex    = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	personalPathRegex = regexp.MustCompile(
-		`(?i)(/home/[a-z0-9_-]+|/Users/[a-z0-9_-]+|C:(?:\\+|/)Users(?:\\+|/)[a-z0-9_-]+)`,
-	)
 	decorativeEmojiRegex = regexp.MustCompile(
 		`([\x{1F300}-\x{1FAFF}\x{26A1}\x{2705}\x{2728}\x{274C}]|:(?:white_check_mark|x):)`,
 	)
@@ -29,6 +27,8 @@ var (
 	asciiArrowRegex    = regexp.MustCompile(`(<->|->|<-|=>)`)
 	headingLinkRegex   = regexp.MustCompile(`\[([^\]]+)\]\([^)]+\)`)
 )
+
+type issueReporter func(where, format string, a ...any)
 
 // Issue represents a repository lint violation.
 type Issue struct {
@@ -77,8 +77,9 @@ func LintRepo(rootDir string) []Issue {
 	return issues
 }
 
-func lintCatalogEntities(cat *catalog.Catalog, addErr func(where, format string, a ...any)) {
-	for _, ch := range cat.Channels {
+func lintCatalogEntities(cat *catalog.Catalog, addErr issueReporter) {
+	for _, chID := range slices.Sorted(maps.Keys(cat.Channels)) {
+		ch := cat.Channels[chID]
 		where := ch.SourcePath
 		if strings.TrimSpace(ch.Repo) == "" {
 			addErr(where, "channel %s missing repo", ch.ID)
@@ -86,7 +87,8 @@ func lintCatalogEntities(cat *catalog.Catalog, addErr func(where, format string,
 		if len(ch.Platforms) == 0 {
 			addErr(where, "channel %s defines no platforms", ch.ID)
 		}
-		for plat, recipe := range ch.Platforms {
+		for _, plat := range slices.Sorted(maps.Keys(ch.Platforms)) {
+			recipe := ch.Platforms[plat]
 			if recipe.Unsupported {
 				continue
 			}
@@ -102,76 +104,85 @@ func lintCatalogEntities(cat *catalog.Catalog, addErr func(where, format string,
 			if !strings.HasPrefix(recipe.Pinned.URL, "https://") {
 				addErr(where, "platform %s pinned URL must use https://", plat)
 			}
-			if !sha256HexRegex.MatchString(strings.ToLower(recipe.Pinned.SHA256)) {
+			if !fsutil.IsValidSHA256(recipe.Pinned.SHA256) {
 				addErr(where, "platform %s invalid 64-char sha256 %q", plat, recipe.Pinned.SHA256)
 			}
 		}
 	}
 
 	for _, ad := range cat.Addons {
-		where := ad.SourcePath
-		if strings.TrimSpace(ad.DisplayName) == "" {
-			addErr(where, "addon %s missing display_name", ad.ID)
+		lintAddonEntity(ad, addErr)
+	}
+}
+
+func lintAddonEntity(ad catalog.Addon, addErr issueReporter) {
+	where := ad.SourcePath
+	if strings.TrimSpace(ad.DisplayName) == "" {
+		addErr(where, "addon %s missing display_name", ad.ID)
+	}
+	if strings.TrimSpace(ad.Category) == "" {
+		addErr(where, "addon %s missing category", ad.ID)
+	}
+	if strings.TrimSpace(ad.Author) == "" {
+		addErr(where, "addon %s missing author", ad.ID)
+	}
+	if strings.TrimSpace(ad.Version) == "" {
+		addErr(where, "addon %s missing version", ad.ID)
+	}
+	if strings.TrimSpace(ad.Description) == "" {
+		addErr(where, "addon %s missing description", ad.ID)
+	}
+	if !strings.HasPrefix(ad.Homepage, "https://") {
+		addErr(where, "addon %s homepage must use https://", ad.ID)
+	}
+	if !strings.HasPrefix(ad.Source.URL, "https://") {
+		addErr(where, "addon %s source.url must use https://", ad.ID)
+	}
+	if !fsutil.IsValidSHA256(ad.Source.SHA256) {
+		addErr(where, "addon %s invalid 64-char sha256 %q", ad.ID, ad.Source.SHA256)
+	}
+	if ad.Source.Mode == catalog.InstallModeFile {
+		if _, err := fsutil.CleanRel(ad.Source.TargetPath); err != nil {
+			addErr(where, "addon %s invalid source.target_path: %v", ad.ID, err)
 		}
-		if strings.TrimSpace(ad.Category) == "" {
-			addErr(where, "addon %s missing category", ad.ID)
+	} else if trimmedDir := strings.TrimSpace(ad.Source.TargetDir); trimmedDir != "" && trimmedDir != "." {
+		if _, err := fsutil.CleanRel(trimmedDir); err != nil {
+			addErr(where, "addon %s invalid source.target_dir: %v", ad.ID, err)
 		}
-		if strings.TrimSpace(ad.Author) == "" {
-			addErr(where, "addon %s missing author", ad.ID)
+	}
+	for _, t := range ad.Targets {
+		if _, err := fsutil.CleanRel(t); err != nil {
+			addErr(where, "addon %s invalid target %q: %v", ad.ID, t, err)
 		}
-		if strings.TrimSpace(ad.Version) == "" {
-			addErr(where, "addon %s missing version", ad.ID)
-		}
-		if strings.TrimSpace(ad.Description) == "" {
-			addErr(where, "addon %s missing description", ad.ID)
-		}
-		if !strings.HasPrefix(ad.Homepage, "https://") {
-			addErr(where, "addon %s homepage must use https://", ad.ID)
-		}
-		if !strings.HasPrefix(ad.Source.URL, "https://") {
-			addErr(where, "addon %s source.url must use https://", ad.ID)
-		}
-		if !sha256HexRegex.MatchString(strings.ToLower(ad.Source.SHA256)) {
-			addErr(where, "addon %s invalid 64-char sha256 %q", ad.ID, ad.Source.SHA256)
-		}
-		if ad.Source.Mode == catalog.InstallModeFile {
-			if _, err := fsutil.CleanRel(ad.Source.TargetPath); err != nil {
-				addErr(where, "addon %s invalid source.target_path: %v", ad.ID, err)
-			}
-		}
-		for _, t := range ad.Targets {
-			if _, err := fsutil.CleanRel(t); err != nil {
-				addErr(where, "addon %s invalid target %q: %v", ad.ID, t, err)
-			}
-			if ad.AddonType == catalog.AddonTypePlugin && !strings.HasSuffix(strings.ToLower(t), ".js") {
-				addErr(where, "plugin addon %s target %q must end with .js", ad.ID, t)
-			}
+		if ad.AddonType == catalog.AddonTypePlugin && !strings.HasSuffix(strings.ToLower(t), ".js") {
+			addErr(where, "plugin addon %s target %q must end with .js", ad.ID, t)
 		}
 	}
 }
 
-func lintTemplates(rootDir string, addErr func(where, format string, a ...any)) {
+var requiredConfigINITokens = []string{
+	"__FULLSCREEN_WIDTH__",
+	"__FULLSCREEN_HEIGHT__",
+	"__WINDOW_WIDTH__",
+	"__WINDOW_HEIGHT__",
+	"__WINDOW_SCALE__",
+	`"__GAME_PATH__"`,
+	`"__RCT1_PATH__"`,
+	`"__SAVE_DIR__"`,
+	`"__USER__"`,
+}
+
+func lintTemplates(rootDir string, addErr issueReporter) {
 	iniPath := filepath.Join(rootDir, "configs", "openrct2", "config.ini")
 	if raw, err := os.ReadFile(iniPath); err != nil {
 		addErr(filepath.ToSlash(iniPath), "missing config.ini template: %v", err)
 	} else {
 		text := string(raw)
 		where := filepath.ToSlash(iniPath)
-		if m := personalPathRegex.FindString(text); m != "" {
+		if m := catalog.ScanPersonalPath(text); m != "" {
 			addErr(where, "contains personal path %q", m)
 		}
-		requiredTokens := []string{
-			"__FULLSCREEN_WIDTH__",
-			"__FULLSCREEN_HEIGHT__",
-			"__WINDOW_WIDTH__",
-			"__WINDOW_HEIGHT__",
-			"__WINDOW_SCALE__",
-			`"__GAME_PATH__"`,
-			`"__RCT1_PATH__"`,
-			`"__SAVE_DIR__"`,
-			`"__USER__"`,
-		}
-		for _, tok := range requiredTokens {
+		for _, tok := range requiredConfigINITokens {
 			if !strings.Contains(text, tok) {
 				addErr(where, "missing required placeholder token %s", tok)
 			}
@@ -191,7 +202,7 @@ func lintTemplates(rootDir string, addErr func(where, format string, a ...any)) 
 	} else {
 		text := string(raw)
 		where := filepath.ToSlash(desktopPath)
-		if m := personalPathRegex.FindString(text); m != "" {
+		if m := catalog.ScanPersonalPath(text); m != "" {
 			addErr(where, "contains personal path %q", m)
 		}
 		if !strings.Contains(text, "Exec=__OPENRCT2_EXEC__ %u") {
@@ -216,7 +227,17 @@ func GitHubHeadingSlug(heading string) string {
 	return b.String()
 }
 
-func lintDocumentation(rootDir string, addErr func(where, format string, a ...any)) {
+func lintDocumentation(rootDir string, addErr issueReporter) {
+	yamlFiles := []string{
+		filepath.Join(".github", "workflows", "ci.yml"),
+		filepath.Join(".github", "workflows", "security.yml"),
+		filepath.Join(".github", "workflows", "benchmark.yml"),
+		filepath.Join(".github", "dependabot.yml"),
+	}
+	for _, relYAML := range yamlFiles {
+		lintYAMLFile(filepath.Join(rootDir, relYAML), addErr)
+	}
+
 	docFiles := []string{
 		"README.md",
 		"CONTRIBUTING.md",
@@ -225,151 +246,164 @@ func lintDocumentation(rootDir string, addErr func(where, format string, a ...an
 		"llms.txt",
 		filepath.Join(".github", "PULL_REQUEST_TEMPLATE.md"),
 	}
-	yamlFiles := []string{
-		filepath.Join(".github", "workflows", "ci.yml"),
-		filepath.Join(".github", "workflows", "security.yml"),
-		filepath.Join(".github", "workflows", "benchmark.yml"),
-		filepath.Join(".github", "dependabot.yml"),
-	}
-
-	for _, relYAML := range yamlFiles {
-		p := filepath.Join(rootDir, relYAML)
-		raw, err := os.ReadFile(p)
-		if err != nil {
-			continue
-		}
-		text := string(raw)
-		where := filepath.ToSlash(p)
-		if m := personalPathRegex.FindString(text); m != "" {
-			addErr(where, "contains personal path %q", m)
-		}
-		if m := decorativeEmojiRegex.FindString(text); m != "" {
-			addErr(where, "contains decorative emoji %q", m)
-		}
-	}
-
 	for _, relDoc := range docFiles {
-		docPath := filepath.Join(rootDir, relDoc)
-		raw, err := os.ReadFile(docPath)
-		if err != nil {
+		lintMarkdownDoc(rootDir, relDoc, addErr)
+	}
+}
+
+func lintYAMLFile(path string, addErr issueReporter) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	text := string(raw)
+	where := filepath.ToSlash(path)
+	if m := catalog.ScanPersonalPath(text); m != "" {
+		addErr(where, "contains personal path %q", m)
+	}
+	if m := decorativeEmojiRegex.FindString(text); m != "" {
+		addErr(where, "contains decorative emoji %q", m)
+	}
+}
+
+type lineLinkRef struct {
+	lineNum int
+	target  string
+}
+
+func lintMarkdownDoc(rootDir, relDoc string, addErr issueReporter) {
+	docPath := filepath.Join(rootDir, relDoc)
+	raw, err := os.ReadFile(docPath)
+	if err != nil {
+		return
+	}
+	where := filepath.ToSlash(docPath)
+	text := fsutil.NormalizeLF(string(raw))
+
+	if m := catalog.ScanPersonalPath(text); m != "" {
+		addErr(where, "contains personal path %q", m)
+	}
+	if m := decorativeEmojiRegex.FindString(text); m != "" {
+		addErr(where, "contains decorative emoji %q", m)
+	}
+
+	isUserFacingDoc := relDoc == "README.md" || relDoc == "CONTRIBUTING.md"
+	lines := strings.Split(text, "\n")
+	inFence := false
+	fenceLang := ""
+	fenceStart := 0
+	var fenceBuf strings.Builder
+	headingSlugs := make(map[string]bool)
+	slugCounts := make(map[string]int)
+	var links []lineLinkRef
+
+	for idx, line := range lines {
+		lineNum := idx + 1
+		trimmed := strings.TrimSpace(line)
+		if after, isFence := strings.CutPrefix(trimmed, "```"); isFence {
+			if !inFence {
+				inFence = true
+				fenceLang = strings.ToLower(strings.TrimSpace(after))
+				fenceStart = lineNum
+				fenceBuf.Reset()
+			} else {
+				if fenceLang == "json" && isUserFacingDoc && !json.Valid([]byte(fenceBuf.String())) {
+					addErr(where, "invalid JSON code block starting at line %d", fenceStart)
+				}
+				inFence = false
+				fenceLang = ""
+			}
 			continue
 		}
-		where := filepath.ToSlash(docPath)
-		text := fsutil.NormalizeLF(string(raw))
-
-		if m := personalPathRegex.FindString(text); m != "" {
-			addErr(where, "contains personal path %q", m)
-		}
-		if m := decorativeEmojiRegex.FindString(text); m != "" {
-			addErr(where, "contains decorative emoji %q", m)
+		if inFence {
+			fenceBuf.WriteString(line)
+			fenceBuf.WriteByte('\n')
+			continue
 		}
 
-		lines := strings.Split(text, "\n")
-		inFence := false
-		fenceLang := ""
-		fenceStart := 0
-		var fenceBuf strings.Builder
-		headingSlugs := make(map[string]bool)
-		slugCounts := make(map[string]int)
+		lintProseLine(where, line, trimmed, lineNum, isUserFacingDoc, addErr)
+		recordHeadingSlug(trimmed, headingSlugs, slugCounts)
 
-		for idx, line := range lines {
-			lineNum := idx + 1
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "```") {
-				if !inFence {
-					inFence = true
-					fenceLang = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(trimmed, "```")))
-					fenceStart = lineNum
-					fenceBuf.Reset()
-				} else {
-					if fenceLang == "json" && (relDoc == "README.md" || relDoc == "CONTRIBUTING.md") {
-						if !json.Valid([]byte(fenceBuf.String())) {
-							addErr(where, "invalid JSON code block starting at line %d", fenceStart)
-						}
-					}
-					inFence = false
-					fenceLang = ""
-				}
-				continue
-			}
-			if inFence {
-				fenceBuf.WriteString(line)
-				fenceBuf.WriteByte('\n')
-				continue
-			}
-
-			if trimmed == "---" {
-				addErr(where, "contains horizontal rule divider '---' at line %d", lineNum)
-			}
-			if relDoc == "README.md" || relDoc == "CONTRIBUTING.md" {
-				if m := boldTableCellRegex.FindString(trimmed); m != "" {
-					addErr(
-						where,
-						"contains bolded first-column table cell %q at line %d",
-						strings.TrimSpace(m),
-						lineNum,
-					)
-				}
-			}
-
-			cleaned := htmlCommentRegex.ReplaceAllString(stripInlineCode(line), "")
-			if m := italicAsideRegex.FindString(cleaned); m != "" {
-				addErr(where, "contains italic parenthetical aside %q", m)
-			}
-			if m := asciiArrowRegex.FindString(cleaned); m != "" {
-				addErr(where, "contains ASCII arrow %q at line %d", m, lineNum)
-			}
-
-			if strings.HasPrefix(trimmed, "#") {
-				title := strings.TrimSpace(strings.TrimLeft(trimmed, "#"))
-				if baseSlug := GitHubHeadingSlug(title); baseSlug != "" {
-					cnt := slugCounts[baseSlug]
-					slugCounts[baseSlug] = cnt + 1
-					slug := baseSlug
-					if cnt > 0 {
-						slug = fmt.Sprintf("%s-%d", baseSlug, cnt)
-					}
-					headingSlugs[slug] = true
-				}
+		if isUserFacingDoc {
+			for _, target := range extractMarkdownLinkTargets(line) {
+				links = append(links, lineLinkRef{lineNum: lineNum, target: target})
 			}
 		}
+	}
 
-		if relDoc == "README.md" || relDoc == "CONTRIBUTING.md" {
-			inFence = false
-			docDir := filepath.Dir(docPath)
-			for _, line := range lines {
-				if strings.HasPrefix(strings.TrimSpace(line), "```") {
-					inFence = !inFence
-					continue
-				}
-				if inFence {
-					continue
-				}
-				for _, target := range extractMarkdownLinkTargets(line) {
-					if strings.HasPrefix(target, "#") {
-						if !headingSlugs[strings.TrimPrefix(target, "#")] {
-							addErr(where, "broken anchor link %q", target)
-						}
-						continue
-					}
-					if strings.HasPrefix(target, "http://") ||
-						strings.HasPrefix(target, "https://") ||
-						strings.HasPrefix(target, "mailto:") {
-						continue
-					}
-					relTarget := target
-					if hashIdx := strings.IndexByte(relTarget, '#'); hashIdx >= 0 {
-						relTarget = relTarget[:hashIdx]
-					}
-					if relTarget == "" {
-						continue
-					}
-					if _, statErr := os.Stat(filepath.Join(docDir, filepath.FromSlash(relTarget))); statErr != nil {
-						addErr(where, "broken relative file link %q", target)
-					}
-				}
-			}
+	if inFence {
+		addErr(where, "unclosed code fence starting at line %d", fenceStart)
+	}
+
+	if isUserFacingDoc {
+		docDir := filepath.Dir(docPath)
+		for _, ref := range links {
+			validateDocLink(where, docDir, ref, headingSlugs, addErr)
 		}
+	}
+}
+
+func lintProseLine(where, line, trimmed string, lineNum int, checkTableBold bool, addErr issueReporter) {
+	if trimmed == "---" {
+		addErr(where, "contains horizontal rule divider '---' at line %d", lineNum)
+	}
+	if checkTableBold {
+		if m := boldTableCellRegex.FindString(trimmed); m != "" {
+			addErr(where, "contains bolded first-column table cell %q at line %d", strings.TrimSpace(m), lineNum)
+		}
+	}
+
+	cleaned := htmlCommentRegex.ReplaceAllString(stripInlineCode(line), "")
+	if m := italicAsideRegex.FindString(cleaned); m != "" {
+		addErr(where, "contains italic parenthetical aside %q", m)
+	}
+	if m := asciiArrowRegex.FindString(cleaned); m != "" {
+		addErr(where, "contains ASCII arrow %q at line %d", m, lineNum)
+	}
+}
+
+func recordHeadingSlug(trimmed string, headingSlugs map[string]bool, slugCounts map[string]int) {
+	if !strings.HasPrefix(trimmed, "#") {
+		return
+	}
+	title := strings.TrimSpace(strings.TrimLeft(trimmed, "#"))
+	baseSlug := GitHubHeadingSlug(title)
+	if baseSlug == "" {
+		return
+	}
+	cnt := slugCounts[baseSlug]
+	slugCounts[baseSlug] = cnt + 1
+	slug := baseSlug
+	if cnt > 0 {
+		slug = fmt.Sprintf("%s-%d", baseSlug, cnt)
+	}
+	headingSlugs[slug] = true
+}
+
+func validateDocLink(
+	where, docDir string,
+	ref lineLinkRef,
+	headingSlugs map[string]bool,
+	addErr issueReporter,
+) {
+	target := ref.target
+	if anchor, ok := strings.CutPrefix(target, "#"); ok {
+		if !headingSlugs[anchor] {
+			addErr(where, "broken anchor link %q at line %d", target, ref.lineNum)
+		}
+		return
+	}
+	if strings.HasPrefix(target, "http://") ||
+		strings.HasPrefix(target, "https://") ||
+		strings.HasPrefix(target, "mailto:") {
+		return
+	}
+	relTarget, _, _ := strings.Cut(target, "#")
+	if relTarget == "" {
+		return
+	}
+	if _, err := os.Stat(filepath.Join(docDir, filepath.FromSlash(relTarget))); err != nil {
+		addErr(where, "broken relative file link %q at line %d", target, ref.lineNum)
 	}
 }
 

@@ -2,6 +2,8 @@ package rctcfg
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,6 +102,11 @@ func TestDeployIdempotenceSyncDiffAndUninstall(t *testing.T) {
 		t.Fatalf("expected in sync diff output, got:\n%s", diffOut.String())
 	}
 
+	// SyncConfigs must fail fast when pointed at a directory missing configs/openrct2
+	if err := SyncConfigs(paths, t.TempDir(), "linux", &out); err == nil {
+		t.Fatal("expected SyncConfigs error when repo template directory is absent")
+	}
+
 	// Sync back into a mock repo directory and verify sanitization removes personal/temp paths
 	repoDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repoDir, "configs", "openrct2"), 0o755); err != nil {
@@ -124,14 +131,46 @@ func TestDeployIdempotenceSyncDiffAndUninstall(t *testing.T) {
 	}
 
 	// Uninstall must remove config.ini, shortcuts.json, and desktop files while preserving save/park.park
-	if err := Uninstall(paths, false, "linux", &out); err != nil {
+	if err := Uninstall(paths, "linux", &out); err != nil {
 		t.Fatalf("Uninstall: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(paths.OpenRCT2Dir, "config.ini")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(paths.OpenRCT2Dir, "config.ini")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal("expected config.ini removed")
 	}
 	if _, err := os.Stat(saveFile); err != nil {
 		t.Fatalf("expected save file preserved, got: %v", err)
+	}
+}
+
+func TestDeterministicSetINIValuesAndLCSLineDiff(t *testing.T) {
+	t.Parallel()
+	base := "[general]\nuncap_fps = true\n\n; Interface settings\n[interface]\ncurrent_theme = \"*RCT2\"\n"
+	updates := map[string]string{
+		"rct1_path":    `"/games/rct1"`,
+		"game_path":    `"/games/rct2"`,
+		"window_scale": "1.500000",
+	}
+
+	first := SetINIValues(base, "general", updates)
+	for range 20 {
+		if got := SetINIValues(base, "general", updates); got != first {
+			t.Fatalf("SetINIValues is non-deterministic:\ngot:\n%s\nfirst:\n%s", got, first)
+		}
+	}
+	// Appended keys in [general] must appear BEFORE "; Interface settings"
+	commentIdx := strings.Index(first, "; Interface settings")
+	gamePathIdx := strings.Index(first, "game_path =")
+	if gamePathIdx < 0 || commentIdx < 0 || gamePathIdx > commentIdx {
+		t.Fatalf("expected appended [general] keys before trailing section comment:\n%s", first)
+	}
+
+	// Verify LCS line diff produces minimal 1-line insertion rather than cascading false diffs
+	edits := computeLineDiff(
+		[]string{"[general]", "a = 1", "b = 2", "c = 3"},
+		[]string{"[general]", "inserted = true", "a = 1", "b = 2", "c = 3"},
+	)
+	if len(edits) != 1 || edits[0].op != '+' || edits[0].line != "inserted = true" {
+		t.Fatalf("unexpected LCS edits: %+v", edits)
 	}
 }
 
@@ -173,7 +212,6 @@ func TestNonForceDeployBackfillsMissingGamePathWithoutClobbering(t *testing.T) {
 		t.Fatalf("game_path = %q, want %q", gotGamePath, rct2Dir)
 	}
 
-	// Verify UpdateConfigGamePaths on fresh and existing config.ini + FormatDesktopExec quoting
 	freshPaths := makeTestPaths(t, "windows")
 	if err := UpdateConfigGamePaths(freshPaths, rct2Dir, "", &out); err != nil {
 		t.Fatalf("UpdateConfigGamePaths fresh: %v", err)
@@ -183,5 +221,8 @@ func TestNonForceDeployBackfillsMissingGamePathWithoutClobbering(t *testing.T) {
 	}
 	if got := FormatDesktopExec("/opt/My Games/openrct2"); got != `"/opt/My Games/openrct2"` {
 		t.Fatalf("FormatDesktopExec with spaces = %q", got)
+	}
+	if _, err := ParseDeployComponent("bogus"); err == nil {
+		t.Fatal("expected ParseDeployComponent error on unknown selector")
 	}
 }
